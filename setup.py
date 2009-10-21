@@ -43,57 +43,63 @@
 ################################################################################
 
 
-from platform import python_version_tuple
+from platform import python_version
 from os import name as platform_name
 from os.path import abspath, join
+from re import findall, search
 from sys import argv
 from subprocess import check_call
-from re import findall, search
+from distutils.command.build_ext import build_ext as _build_ext
 from distutils.core import setup, Extension
+        
 
-
-python_version = (3, 1, 0)
-if python_version_tuple() < python_version:
-    raise SystemExit("Aborted: Python >= {0}.{1}.{2} "
-                     "is required".format(*python_version))
+curr_ver = python_version()
+min_vers = {2: "2.6.2", 3: "3.1.1"}
+if curr_ver < min_vers[int(curr_ver[0])]:
+    raise SystemExit("Aborted: pyev requires Python2 >= {0[2]} "
+                     "OR Python3 >= {0[3]}".format(min_vers))
 
 if platform_name != "posix":
-    raise SystemExit("Aborted: platform '{0}' "
-                     "not supported".format(platform_name))
+    raise SystemExit("Aborted: platform '{0}' not supported".format(platform_name))
 
 
-pyev_version = "0.4.0"
+pyev_version = "0.5.0"
 pyev_description = open(abspath("README.txt"), "r").read()
 libev_dir = abspath("src/libev")
-libev_libs = []
 libev_configure_ac = open(join(libev_dir, "configure.ac"), "r").read()
 libev_version = search("AM_INIT_AUTOMAKE\(libev,(\S+)\)",
                        libev_configure_ac).group(1)
 
 
-if "sdist" not in argv:
-    check_call(join(libev_dir, "configure"), cwd=libev_dir, shell=True)
-    libev_config = open(join(libev_dir, "config.h"), "r").read()
-    libev_libs = [l.lower() for l in set(findall("#define HAVE_LIB(\S+) 1",
-                                                 libev_config))]
+class build_ext(_build_ext):
+    def finalize_options(self):
+        if "sdist" not in argv:
+            check_call(join(libev_dir, "configure"), cwd=libev_dir, shell=True)
+            libev_config = open(join(libev_dir, "config.h"), "r").read()
+            self.libraries = [l.lower() for l in
+                              set(findall("#define HAVE_LIB(\S+) 1",
+                                          libev_config))]
+        _build_ext.finalize_options(self)
 
 
 setup(
       name="pyev",
       version="-".join((pyev_version, libev_version)),
       url="http://pyev.googlecode.com/",
-      description="pyev module",
+      description="Python libev interface.",
       long_description=pyev_description,
       author="Malek Hadj-Ali",
       author_email="lekmalek@gmail.com",
       platforms=["POSIX"],
       license="BSD License / GNU General Public License (GPL)",
+      cmdclass={"build_ext": build_ext},
       ext_modules=[
                    Extension(
                              "pyev",
                              ["src/pyev.c"],
-                             libraries=libev_libs,
                              define_macros=[
+                                            #("EV_MAXPRI", "5"),
+                                            #("EV_MINPRI", "-5"),
                                             ("PYEV_VERSION",
                                              "\"{0}\"".format(pyev_version)),
                                             ("LIBEV_VERSION",
@@ -107,6 +113,7 @@ setup(
                    "License :: OSI Approved :: BSD License",
                    "License :: OSI Approved :: GNU General Public License (GPL)",
                    "Operating System :: POSIX",
+                   "Programming Language :: Python :: 2.6",
                    "Programming Language :: Python :: 3.1",
                    "Topic :: Software Development :: Libraries"
                   ]

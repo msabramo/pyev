@@ -43,16 +43,37 @@
 *******************************************************************************/
 
 
+#define PY_SSIZE_T_CLEAN
 #include "Python.h"
 #include "structmember.h"
 
-#ifndef EV_VERIFY
+#if 0
 #ifdef NDEBUG
-#define EV_VERIFY 0
-#else
-#define EV_VERIFY 2
+#undef NDEBUG
 #endif /* NDEBUG */
+#ifndef EV_VERIFY
+#define EV_VERIFY 3
 #endif /* !EV_VERIFY */
+#endif
+
+/* set EV_VERIFY for a debug build */
+#ifndef EV_VERIFY
+#ifdef Py_DEBUG
+#define EV_VERIFY 3
+#ifdef NDEBUG //to be sure
+#undef NDEBUG
+#endif /* NDEBUG */
+#endif /* Py_DEBUG */
+#endif /* !EV_VERIFY */
+
+/* pyev requirements */
+#undef EV_MULTIPLICITY
+#undef EV_PERIODIC_ENABLE
+#undef EV_STAT_ENABLE
+#undef EV_IDLE_ENABLE
+#undef EV_EMBED_ENABLE
+#undef EV_FORK_ENABLE
+#undef EV_ASYNC_ENABLE
 
 #include "libev/ev.c"
 
@@ -73,14 +94,16 @@
 * objects
 *******************************************************************************/
 
-/* pyev.Error */
-static PyObject *Pyev_Error;
+/* Error */
+static PyObject *Error;
 
 
 /* Loop */
 typedef struct {
     PyObject_HEAD
     struct ev_loop *loop;
+    PyObject *pending_cb;
+    PyObject *data;
 } Loop;
 
 /* the 'default loop' */
@@ -229,7 +252,7 @@ pyev_realloc(void *ptr, long size)
         return NULL;
     }
 
-    return PyMem_Realloc(ptr ? ptr : NULL, size);
+    return PyMem_Realloc(ptr ? ptr : NULL, (size_t)size);
 }
 
 
@@ -238,8 +261,7 @@ int
 check_positive_float(double value)
 {
     if (value < 0.0) {
-        PyErr_SetString(PyExc_ValueError,
-                        "a positive float or 0.0 is required");
+        PyErr_SetString(PyExc_ValueError, "a positive float or 0.0 is required");
         return -1;
     }
 
@@ -248,6 +270,9 @@ check_positive_float(double value)
 
 
 /* fwd decl */
+static int
+Loop_pending_cb_set(Loop *self, PyObject *value, void *closure);
+
 int
 update_stat(Stat *);
 
@@ -264,21 +289,54 @@ Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure);
 
 /* LoopType.tp_doc */
 PyDoc_STRVAR(Loop_doc,
-"Loop([flags])\n\n\
-Instanciate a new event loop that is always distinct from the default loop.\n\
-Unlike the 'default loop', it cannot handle Signal and Child watchers, and\n\
-attempts to do so will be greeted by undefined behaviour.\n\
+"Loop([flags, [pending_cb=None, [data=None]]])\n\
+\n\
+Instanciates a new event loop that is always distinct from the 'default loop'.\n\
+Unlike the 'default loop', it cannot handle Child watchers, and attempts to do\n\
+so will raise an exception.\n\
 The recommended way to use libev with threads is indeed to create one loop per\n\
 thread, and using the 'default loop' in the 'main' or 'initial' thread.\n\
 The 'flags' argument can be used to specify special behaviour or specific\n\
-backends to use, it defaults to EVFLAG_AUTO. See description for EVFLAG_*\n\
-and EVBACKEND_* in libev documentation for more information on flags.");
+backends to use, it defaults to EVFLAG_AUTO.\n\
+If 'pending_cb' is omitted or None the loop will fall back to its default\n\
+behavior of calling ev_invoke_pending() when required. If it is a callable, then\n\
+the loop will execute it instead and then it becomes the user's responsibility\n\
+to call Loop.pending_invoke() to invoke pending events.\n\
+The 'data' argument can be used to specify any python object you might want to\n\
+attach to the loop (defaults to None).\n\
+\n\
+See also:\n\
+The documentation for ev_default_loop() in 'FUNCTIONS CONTROLLING THE EVENT\n\
+LOOP' at libev documentation for more information about 'flags'.");
+
+
+/* loop pending callback */
+static void
+loop_pending_cb(struct ev_loop *loop)
+{
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    Loop *_loop = ev_userdata(loop);
+    PyObject *result;
+
+    result = PyObject_CallFunctionObjArgs(_loop->pending_cb, _loop, NULL);
+    if (!result) {
+        ev_unloop(loop, EVUNLOOP_ALL);
+    }
+    else {
+        Py_DECREF(result);
+    }
+
+    PyGILState_Release(gstate);
+}
 
 
 /* new_loop - instanciate a Loop */
 Loop *
-new_loop(PyTypeObject *type, unsigned int flags, int default_loop)
+new_loop(PyTypeObject *type, unsigned int flags, int default_loop,
+         PyObject *pending_cb, PyObject *data)
 {
+    PyObject *tmp;
+
     Loop *self = (Loop *)type->tp_alloc(type, 0);
     if (!self) {
         return NULL;
@@ -291,14 +349,49 @@ new_loop(PyTypeObject *type, unsigned int flags, int default_loop)
     else {
         self->loop = ev_loop_new(flags);
     }
-
     if (!self->loop) {
-        PyErr_SetString(Pyev_Error, "could not create Loop, bad 'flags'?");
+        PyErr_SetString(Error, "could not create Loop, bad 'flags'?");
         Py_DECREF(self);
         return NULL;
     }
 
+    /* self->pending_cb */
+    if (Loop_pending_cb_set(self, pending_cb, NULL)) {
+        Py_DECREF(self);
+        return NULL;
+    }
+
+    /* self->data */
+    if (data) {
+        tmp = self->data;
+        Py_INCREF(data);
+        self->data = data;
+        Py_XDECREF(tmp);
+    }
+
+    ev_set_userdata(self->loop, (void *)self);
+
     return self;
+}
+
+
+/* LoopType.tp_traverse */
+static int
+Loop_traverse(Loop *self, visitproc visit, void *arg)
+{
+    Py_VISIT(self->data);
+
+    return 0;
+}
+
+
+/* LoopType.tp_clear */
+static int
+Loop_clear(Loop *self)
+{
+    Py_CLEAR(self->data);
+
+    return 0;
 }
 
 
@@ -306,6 +399,10 @@ new_loop(PyTypeObject *type, unsigned int flags, int default_loop)
 static void
 Loop_dealloc(Loop *self)
 {
+    Loop_clear(self);
+
+    Py_XDECREF(self->pending_cb);
+
     if (self->loop) {
         if (ev_is_default_loop(self->loop)) {
             ev_default_destroy();
@@ -325,18 +422,24 @@ static PyObject *
 Loop_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     unsigned int flags = EVFLAG_AUTO;
+    PyObject *pending_cb = Py_None;
+    PyObject *data = NULL;
 
-    if (!PyArg_ParseTuple(args, "|I:__new__", &flags)) {
+    static char *kwlist[] = {"flags", "pending_cb", "data", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|IOO:__new__", kwlist,
+                                     &flags, &pending_cb, &data)) {
         return NULL;
     }
 
-    return (PyObject *)new_loop(type, flags, 0);
+    return (PyObject *)new_loop(type, flags, 0, pending_cb, data);
 }
 
 
 /* Loop.fork() */
 PyDoc_STRVAR(Loop_fork_doc,
-"fork()\n\n\
+"fork()\n\
+\n\
 This method sets a flag that causes subsequent loop iterations to reinitialise\n\
 the kernel state for backends that have one. Despite the name, you can call it\n\
 anytime, but it makes most sense after forking, in the child process (or both\n\
@@ -361,14 +464,16 @@ Loop_fork(Loop *self)
 }
 
 
-/* Loop.count() -> int */
+/* Loop.count() -> int/long */
 PyDoc_STRVAR(Loop_count_doc,
-"count() -> int\n\n\
+"count() -> int/long\n\
+\n\
 Returns the count of loop iterations for the loop, which is identical to the\n\
 number of times libev did poll for new events. It starts at 0 and happily wraps\n\
 around with enough iterations.\n\
 This value can sometimes be useful as a generation counter of sorts (it 'ticks'\n\
-the number of loop iterations.");
+the number of loop iterations), as it roughly corresponds with Prepare and Check\n\
+calls.");
 
 static PyObject *
 Loop_count(Loop *self)
@@ -377,9 +482,27 @@ Loop_count(Loop *self)
 }
 
 
+/* Loop.depth() -> int/long */
+PyDoc_STRVAR(Loop_depth_doc,
+"depth() -> int/long\n\
+\n\
+Returns the number of times Loop.loop() was entered minus the number of times\n\
+Loop.loop() was exited, in other words, the recursion depth.\n\
+Outside Loop.loop(), this number is zero. In a callback, this number is 1,\n\
+unless Loop.loop() was invoked recursively (or from another thread), in which\n\
+case it is higher.");
+
+static PyObject *
+Loop_depth(Loop *self)
+{
+    return PyLong_FromUnsignedLong(ev_loop_depth(self->loop));
+}
+
+
 /* Loop.now() -> float */
 PyDoc_STRVAR(Loop_now_doc,
-"now() -> float\n\n\
+"now() -> float\n\
+\n\
 Returns the current 'event loop time', which is the time the event loop received\n\
 events and started processing them. This timestamp does not change as long as\n\
 callbacks are being processed, and this is also the base time used for relative\n\
@@ -395,15 +518,18 @@ Loop_now(Loop *self)
 
 /* Loop.now_update() */
 PyDoc_STRVAR(Loop_now_update_doc,
-"now_update()\n\n\
+"now_update()\n\
+\n\
 Establishes the current time by querying the kernel, updating the time returned\n\
-by Loop.now() in the process. This is a costly operation and is usually done\n\
+by Loop.now() in the progress. This is a costly operation and is usually done\n\
 automatically within Loop.loop().\n\
-This method is rarely useful, but when some event callback runs for a very long\n\
-time without entering the event loop, updating libev's idea of the current time\n\
-is a good idea.\n\
-See also 'The special problem of time updates' in the ev_timer section of\n\
-libev's documentation.");
+This function is rarely useful, but when some event callback runs for a very\n\
+long time without entering the event loop, updating libev's idea of the current\n\
+time is a good idea.\n\
+\n\
+See also:\n\
+'The special problem of time updates' in the ev_timer section at libev\n\
+documentation.");
 
 static PyObject *
 Loop_now_update(Loop *self)
@@ -414,40 +540,83 @@ Loop_now_update(Loop *self)
 }
 
 
-/* Loop.loop([flags]) */
+/* Loop.suspend()
+   Loop.resume() */
+PyDoc_STRVAR(Loop_suspend_resume_doc,
+"suspend()\n\
+resume()\n\
+\n\
+These two methods suspend and resume a loop, for use when the loop is not used\n\
+for a while and timeouts should not be processed.\n\
+A typical use case would be an interactive program such as a game: When the user\n\
+presses Ctrl+Z to suspend the game and resumes it an hour later it would be best\n\
+to handle timeouts as if no time had actually passed while the program was\n\
+suspended. This can be achieved by calling Loop.suspend() in your SIGTSTP\n\
+handler, sending yourself a SIGSTOP and calling Loop.resume() directly\n\
+afterwards to resume timer processing.\n\
+Effectively, all Timer watchers will be delayed by the time spend between\n\
+Loop.suspend() and Loop.resume(), and all Periodic watchers will be rescheduled\n\
+(that is, they will lose any events that would have occured while suspended).\n\
+After calling Loop.suspend() you must not call any function on the given loop\n\
+other than Loop.resume(), and you must not call Loop.resume() without a previous\n\
+call to Loop.suspend().\n\
+Calling Loop.suspend()/Loop.resume() has the side effect of updating the event\n\
+loop time (see Loop.now_update()).");
+
+static PyObject *
+Loop_suspend(Loop *self)
+{
+    ev_suspend(self->loop);
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+Loop_resume(Loop *self)
+{
+    ev_resume(self->loop);
+
+    Py_RETURN_NONE;
+}
+
+
+/* Loop.loop([flag]) */
 PyDoc_STRVAR(Loop_loop_doc,
-"loop([flags])\n\n\
-This method usually is called after you initialised all your watchers and you\n\
-want to start handling events.\n\
-If the 'flags' argument is omitted or specified as 0, it will not return until\n\
+"loop([flag])\n\
+\n\
+This method usually is called after you have initialised all your watchers and\n\
+you want to start handling events.\n\
+If the 'flag' argument is omitted or specified as 0, it will not return until\n\
 either no event watchers are active anymore or Loop.unloop() was called.\n\
-Please note that an explicit unloop() is usually better than relying on all\n\
-watchers to be stopped when deciding when a program has finished (especially in\n\
-interactive programs).\n\
-A 'flags' value of EVLOOP_NONBLOCK will look for new events, will handle those\n\
+A 'flag' value of EVLOOP_NONBLOCK will look for new events, will handle those\n\
 events and any already outstanding ones, but will not block your process in case\n\
 there are no events and will return after one iteration of the loop.\n\
-A 'flags' value of EVLOOP_ONESHOT will look for new events (waiting if\n\
-necessary) and will handle those and any already outstanding ones. It will block\n\
-your process until at least one new event arrives (which could be an event\n\
-internal to libev itself, so there is no guarantee that a user-registered\n\
-callback will be called), and will return after one iteration of the loop. This\n\
-is useful if you are waiting for some external event in conjunction with\n\
-something not expressible using other libev watchers. However, a pair of\n\
-Prepare/Check watchers is usually a better approach for this kind of thing.");
+A 'flag' value of EVLOOP_ONESHOT will look for new events (waiting if necessary)\n\
+and will handle those and any already outstanding ones. It will block your\n\
+process until at least one new event arrives (which could be an event internal\n\
+to libev itself, so there is no guarantee that a user-registered callback will\n\
+be called), and will return after one iteration of the loop. This is useful if\n\
+you are waiting for some external event in conjunction with something not\n\
+expressible using libev watchers. However, a pair of Prepare/Check watchers is\n\
+usually a better approach for this kind of thing.\n\
+\n\
+Note:\n\
+An explicit Loop.unloop() is usually better than relying on all watchers to be\n\
+stopped when deciding when a program has finished (especially in interactive\n\
+programs).");
 
 static PyObject *
 Loop_loop(Loop *self, PyObject *args)
 {
-    int flags = 0;
+    int flag = 0;
 
-    if (!PyArg_ParseTuple(args, "|i:loop", &flags)) {
+    if (!PyArg_ParseTuple(args, "|i:loop", &flag)) {
         return NULL;
     }
 
     Py_BEGIN_ALLOW_THREADS
 
-    ev_loop(self->loop, flags);
+    ev_loop(self->loop, flag);
 
     Py_END_ALLOW_THREADS
 
@@ -461,13 +630,15 @@ Loop_loop(Loop *self, PyObject *args)
 
 /* Loop.unloop([how]) */
 PyDoc_STRVAR(Loop_unloop_doc,
-"unloop([how])\n\n\
+"unloop([how])\n\
+\n\
 Can be used to make a call to Loop.loop() return early (but only after it has\n\
 processed all outstanding events).\n\
-If the 'how' argument is omitted or specified as EVUNLOOP_ALL, it will  make all\n\
-nested loop() calls return.\n\
-A 'how' value of EVUNLOOP_ONE will make the innermost loop() call return.\n\
-It is safe to call unloop() from outside any loop() calls.");
+If the 'how' argument is omitted or specified as EVUNLOOP_ALL, it will make all\n\
+nested Loop.loop() calls return.\n\
+A 'how' value of EVUNLOOP_ONE will make the innermost Loop.loop() call return.\n\
+This 'unloop state' will be cleared when entering Loop.loop() again.\n\
+It is safe to call Loop.unloop() from otuside any Loop.loop() calls.");
 
 static PyObject *
 Loop_unloop(Loop *self, PyObject *args)
@@ -488,19 +659,24 @@ Loop_unloop(Loop *self, PyObject *args)
    Loop.unref() */
 PyDoc_STRVAR(Loop_ref_unref_doc,
 "ref()\n\
-unref()\n\n\
-Note: these two methods have nothing to do with python reference counting.\n\
-Ref/unref can be used to add or remove a reference count on the event loop:\n\
-Every watcher keeps one reference, and as long as the reference count is\n\
-nonzero, loop() will not return on its own.\n\
-If you have a watcher you never unregister that should not keep the loop from\n\
-returning, call unref() after starting, and ref() before stopping it.\n\
-As an example, libev itself uses this for its internal signal pipe: It is not\n\
-visible to the libev user and should not keep loop() from exiting if no event\n\
-watchers registered by it are active. It is also an excellent way to do this for\n\
-generic recurring timers or from within third-party libraries. Just remember to\n\
-unref after start and ref before stop (but only if the watcher wasn't active\n\
-before, or was active before, respectively).");
+unref()\n\
+\n\
+ref()/unref() can be used to add or remove a reference count on the event loop:\n\
+every watcher keeps one reference, and as long as the reference count is\n\
+nonzero, Loop.loop() will not return on its own.\n\
+If you have a watcher you never unregister that should not keep Loop.loop() from\n\
+returning, call Loop.unref() after starting, and Loop.ref() before stopping it.\n\
+As an example, libev itself uses this for its internal signal pipe: it is not\n\
+visible to the libev user and should not keep Loop.loop() from exiting if no\n\
+event watchers registered by it are active. It is also an excellent way to do\n\
+this for generic recurring timers or from within third-party libraries. Just\n\
+remember to Loop.unref() after start() and Loop.ref() before stop() (but only if\n\
+the watcher wasn't active before, or was active before, respectively. Note also\n\
+that libev might stop watchers itself (e.g. non-repeating timers) in which case\n\
+you have to Loop.ref() in the callback).\n\
+\n\
+Note:\n\
+These two methods have nothing to do with python reference counting.");
 
 static PyObject *
 Loop_ref(Loop *self)
@@ -523,7 +699,8 @@ Loop_unref(Loop *self)
    Loop.set_timeout_collect_interval(interval) */
 PyDoc_STRVAR(Loop_set_collect_interval_doc,
 "set_io_collect_interval(interval)\n\
-set_timeout_collect_interval(interval)\n\n\
+set_timeout_collect_interval(interval)\n\
+\n\
 These advanced methods influence the time that libev will spend waiting for\n\
 events. Both time intervals are by default 0, meaning that libev will try to\n\
 invoke Timer/Periodic callbacks and Io callbacks with minimum latency.\n\
@@ -533,25 +710,29 @@ loop iterations (or to increase power-saving opportunities).\n\
 The idea is that sometimes your program runs just fast enough to handle one (or\n\
 very few) event(s) per loop iteration. While this makes the program responsive,\n\
 it also wastes a lot of CPU time to poll for new events, especially with\n\
-backends like select() which have a high overhead for the actual polling but can\n\
+backends like select which have a high overhead for the actual polling but can\n\
 deliver many events at once.\n\
 By setting a higher io collect interval you allow libev to spend more time\n\
-collecting Io events, so you can handle more events per iteration, at the cost\n\
-of increasing latency. Timeouts (both Periodic and Timer) will not be affected.\n\
-Setting this to a non-zero value will introduce an additional sleep() call into\n\
-most loop iterations.\n\
+collecting I/O events, so you can handle more events per iteration, at the cost\n\
+of increasing latency. Timeouts (both Periodic and Timer) will be not affected.\n\
+Setting this to a non-null value will introduce an additional sleep() call into\n\
+most loop iterations. The sleep time ensures that libev will not poll for Io\n\
+events more often then once per this interval, on average.\n\
 Likewise, by setting a higher timeout collect interval you allow libev to spend\n\
 more time collecting timeouts, at the expense of increased latency/jitter/\n\
 inexactness (the watcher callback will be called later). Io watchers will not be\n\
-affected. Setting this to a non-zero value will not introduce any overhead in\n\
+affected. Setting this to a non-null value will not introduce any overhead in\n\
 libev.\n\
-Many (busy) programs can usually benefit by setting the Io collect interval to a\n\
+Many (busy) programs can usually benefit by setting the io collect interval to a\n\
 value near 0.1 or so, which is often enough for interactive servers (of course\n\
 not for games), likewise for timeouts. It usually doesn't make much sense to set\n\
 it to a lower value than 0.01, as this approaches the timing granularity of most\n\
-systems.\n\
+systems. Note that if you do transactions with the outside world and you can't\n\
+increase the parallelity, then this setting will limit your transaction rate (if\n\
+you need to poll once per transaction and the io collect interval is 0.01, then\n\
+you can't do more than 100 transations per second).\n\
 Setting the timeout collect interval can improve the opportunity for saving\n\
-power, as the program will 'bundle' timeout callback invocations that are 'near'\n\
+power, as the program will 'bundle' timer callback invocations that are 'near'\n\
 in time together, by delaying some, thus reducing the number of times the\n\
 process sleeps and wakes up again. Another useful technique to reduce\n\
 iterations/wake-ups is to use Periodic watchers and make sure they fire on, say,\n\
@@ -594,12 +775,43 @@ Loop_set_timeout_collect_interval(Loop *self, PyObject *args)
 }
 
 
-#if EV_VERIFY
+/* Loop.pending_invoke() */
+PyDoc_STRVAR(Loop_pending_invoke_doc,
+"pending_invoke()\n\
+\n\
+This method will simply invoke all pending watchers while resetting their\n\
+pending state. Normally, Loop.loop() does this automatically when required, but\n\
+when setting the 'pending_cb' attribute this call comes in handy.");
+
+static PyObject *
+Loop_pending_invoke(Loop *self)
+{
+    ev_invoke_pending(self->loop);
+
+    Py_RETURN_NONE;
+}
+
+
+/* Loop.pending_count() -> int/long */
+PyDoc_STRVAR(Loop_pending_count_doc,
+"pending_count() -> int/long\n\
+\n\
+Returns the number of pending watchers - zero indicates that no watchers are\n\
+pending.");
+
+static PyObject *
+Loop_pending_count(Loop *self)
+{
+    return PyLong_FromUnsignedLong(ev_pending_count(self->loop));
+}
+
+
 /* Loop.verify() */
 PyDoc_STRVAR(Loop_verify_doc,
-"verify()\n\n\
+"verify()\n\
+\n\
 This method only does something with a debug build of pyev (which needs a debug\n\
-build of python). It tries to go through all internal structures and checks them\n\
+build of Python). It tries to go through all internal structures and checks them\n\
 for validity. If anything is found to be inconsistent, it will print an error\n\
 message to standard error and call abort().\n\
 This can be used to catch bugs inside libev itself: under normal circumstances,\n\
@@ -612,7 +824,6 @@ Loop_verify(Loop *self)
 
     Py_RETURN_NONE;
 }
-#endif /* EV_VERIFY */
 
 
 /* LoopType.tp_methods */
@@ -621,10 +832,16 @@ static PyMethodDef Loop_methods[] = {
      METH_NOARGS, Loop_fork_doc},
     {"count", (PyCFunction)Loop_count,
      METH_NOARGS, Loop_count_doc},
+    {"depth", (PyCFunction)Loop_depth,
+     METH_NOARGS, Loop_depth_doc},
     {"now", (PyCFunction)Loop_now,
      METH_NOARGS, Loop_now_doc},
     {"now_update", (PyCFunction)Loop_now_update,
      METH_NOARGS, Loop_now_update_doc},
+    {"suspend", (PyCFunction)Loop_suspend,
+     METH_NOARGS, Loop_suspend_resume_doc},
+    {"resume", (PyCFunction)Loop_resume,
+     METH_NOARGS, Loop_suspend_resume_doc},
     {"loop", (PyCFunction)Loop_loop,
      METH_VARARGS, Loop_loop_doc},
     {"unloop", (PyCFunction)Loop_unloop,
@@ -638,10 +855,20 @@ static PyMethodDef Loop_methods[] = {
     {"set_timeout_collect_interval",
      (PyCFunction)Loop_set_timeout_collect_interval,
      METH_VARARGS, Loop_set_collect_interval_doc},
-#if EV_VERIFY
+    {"pending_invoke", (PyCFunction)Loop_pending_invoke,
+     METH_NOARGS, Loop_pending_invoke_doc},
+    {"pending_count", (PyCFunction)Loop_pending_count,
+     METH_NOARGS, Loop_pending_count_doc},
     {"verify", (PyCFunction)Loop_verify,
      METH_NOARGS, Loop_verify_doc},
-#endif /* EV_VERIFY */
+    {NULL}  /* Sentinel */
+};
+
+
+/* LoopType.tp_members */
+static PyMemberDef Loop_members[] = {
+    {"data", T_OBJECT, offsetof(Loop, data), 0,
+     "loop data"},
     {NULL}  /* Sentinel */
 };
 
@@ -672,12 +899,63 @@ Loop_backend_get(Loop *self, void *closure)
 }
 
 
+/* Loop.pending_cb */
+PyDoc_STRVAR(Loop_pending_cb_doc,
+"The current invoke pending callback, its signature must be: pending_cb(loop).\n\
+'loop' will be the Loop object that needs invoking pending events.\n\
+If pending_cb raises an error, pyev will stop the loop.\n\
+This overrides the invoke pending functionality of the loop: instead of\n\
+invoking all pending watchers when there are any, Loop.loop() will call this\n\
+callback instead. This is useful, for example, when you want to invoke the\n\
+actual watchers inside another context (another thread etc.).\n\
+If you want to reset the callback, set it to None.");
+
+static PyObject *
+Loop_pending_cb_get(Loop *self, void *closure)
+{
+    Py_INCREF(self->pending_cb);
+    return self->pending_cb;
+}
+
+static int
+Loop_pending_cb_set(Loop *self, PyObject *value, void *closure)
+{
+    PyObject *tmp;
+
+    if (!value) {
+        PyErr_SetString(PyExc_TypeError, "cannot delete attribute");
+        return -1;
+    }
+
+    if (value != Py_None && !PyCallable_Check(value)) {
+        PyErr_SetString(PyExc_TypeError, "a callable or None is required");
+        return -1;
+    }
+
+    if (value == Py_None) {
+        ev_set_invoke_pending_cb(self->loop, ev_invoke_pending);
+    }
+    else {
+        ev_set_invoke_pending_cb(self->loop, loop_pending_cb);
+    }
+
+    tmp = self->pending_cb;
+    Py_INCREF(value);
+    self->pending_cb = value;
+    Py_XDECREF(tmp);
+
+    return 0;
+}
+
+
 /* LoopType.tp_getsets */
 static PyGetSetDef Loop_getsets[] = {
     {"default_loop", (getter)Loop_default_loop_get, NULL,
      Loop_default_loop_doc, NULL},
     {"backend", (getter)Loop_backend_get, NULL,
      Loop_backend_doc, NULL},
+    {"pending_cb", (getter)Loop_pending_cb_get, (setter)Loop_pending_cb_set,
+     Loop_pending_cb_doc, NULL},
     {NULL}  /* Sentinel */
 };
 
@@ -703,16 +981,16 @@ static PyTypeObject LoopType = {
     0,                                        /*tp_getattro*/
     0,                                        /*tp_setattro*/
     0,                                        /*tp_as_buffer*/
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC, /*tp_flags*/
     Loop_doc,                                 /*tp_doc*/
-    0,                                        /*tp_traverse*/
-    0,                                        /*tp_clear*/
+    (traverseproc)Loop_traverse,              /*tp_traverse*/
+    (inquiry)Loop_clear,                      /*tp_clear*/
     0,                                        /*tp_richcompare*/
     0,                                        /*tp_weaklistoffset*/
     0,                                        /*tp_iter*/
     0,                                        /*tp_iternext*/
     Loop_methods,                             /*tp_methods*/
-    0,                                        /*tp_members*/
+    Loop_members,                             /*tp_members*/
     Loop_getsets,                             /*tp_getsets*/
     0,                                        /*tp_base*/
     0,                                        /*tp_dict*/
@@ -730,19 +1008,19 @@ static PyTypeObject LoopType = {
 *******************************************************************************/
 
 /* watcher callback */
-void
+static void
 _watcher_cb(struct ev_loop *loop, ev_watcher *watcher, int events)
 {
     PyGILState_STATE gstate = PyGILState_Ensure();
     _Watcher *_watcher = watcher->data;
+    PyObject *result;
 
     if ((events & EV_STAT) && update_stat((Stat *)_watcher)) {
         ev_unloop(loop, EVUNLOOP_ALL);
     }
     else if (_watcher->callback != Py_None) {
-        PyObject *result = PyObject_CallFunctionObjArgs(
-                               _watcher->callback, _watcher,
-                               PyLong_FromUnsignedLong(events), NULL);
+        result = PyObject_CallFunctionObjArgs(_watcher->callback, _watcher,
+                     PyLong_FromUnsignedLong(events), NULL);
         if (!result) {
             PyErr_WriteUnraisable(_watcher->callback);
         }
@@ -763,8 +1041,7 @@ int
 set_watcher(_Watcher *self)
 {
     if (ev_is_active(self->watcher)) {
-        PyErr_SetString(Pyev_Error,
-                        "you cannot set a watcher while it is active");
+        PyErr_SetString(Error, "you cannot set a watcher while it is active");
         return -1;
     }
 
@@ -836,11 +1113,9 @@ _Watcher_init(_Watcher *self, Loop *loop, PyObject *callback, PyObject *data,
         PyErr_SetString(PyExc_TypeError, "a pyev.Loop is required");
         return -1;
     }
-    else {
-        if (default_loop && !ev_is_default_loop(loop->loop)) {
-            PyErr_SetString(Pyev_Error, "loop must be the 'default loop'");
-            return -1;
-        }
+    else if (default_loop && !ev_is_default_loop(loop->loop)) {
+        PyErr_SetString(Error, "loop must be the 'default loop'");
+        return -1;
     }
     tmp = (PyObject *)self->loop;
     Py_INCREF(loop);
@@ -866,8 +1141,9 @@ _Watcher_init(_Watcher *self, Loop *loop, PyObject *callback, PyObject *data,
 
 /* _Watcher.invoke(events) */
 PyDoc_STRVAR(_Watcher_invoke_doc,
-"invoke(events)\n\n\
-Invoke the watcher with the given events.\n\
+"invoke(events)\n\
+\n\
+Invoke the watcher with the given 'events'.\n\
 'events' doesn't need to be valid as long as the watcher callback can deal with\n\
 that fact.");
 
@@ -886,12 +1162,13 @@ _Watcher_invoke(_Watcher *self, PyObject *args)
 }
 
 
-/* _Watcher.clear_pending() -> long */
+/* _Watcher.clear_pending() -> int/long */
 PyDoc_STRVAR(_Watcher_clear_pending_doc,
-"clear_pending() -> int\n\n\
-If the watcher is pending, this function clears its pending status and returns\n\
-its events bitset (as if its callback was invoked).\n\
-If the watcher isn't pending it does nothing and returns 0.\n\
+"clear_pending() -> int/long\n\
+\n\
+If the watcher is pending, this method clears its pending status and returns its\n\
+events bitset (as if its callback was invoked). If the watcher isn't pending it\n\
+does nothing and returns 0.\n\
 Sometimes it can be useful to 'poll' a watcher instead of waiting for its\n\
 callback to be invoked, which can be accomplished with this method.");
 
@@ -905,14 +1182,16 @@ _Watcher_clear_pending(_Watcher *self)
 
 /* _Watcher.start() - doc only */
 PyDoc_STRVAR(_Watcher_start_doc,
-"start()\n\n\
+"start()\n\
+\n\
 Starts (activates) the watcher. Only active watchers will receive events.\n\
 If the watcher is already active nothing will happen.");
 
 
 /* _Watcher.stop() - doc only */
 PyDoc_STRVAR(_Watcher_stop_doc,
-"stop()\n\n\
+"stop()\n\
+\n\
 Stops the watcher if active, and clears the pending status (whether the watcher\n\
 was active or not).\n\
 It is possible that stopped watchers are pending - for example, non-repeating\n\
@@ -945,7 +1224,7 @@ PyDoc_STRVAR(_Watcher_callback_doc,
 "This watcher's callback. The callback is a callable whose signature must be:\n\
 callback(watcher, events).\n\
 The 'watcher' argument will be the python watcher object receiving the events.\n\
-The 'events' argument  will be a python int representing ored EV_* flags\n\
+The 'events' argument  will be a python int/long representing ored EV_* flags\n\
 corresponding to the received events.\n\
 As a rule you should not let the callback return with unhandled exceptions. The\n\
 loop 'does not know' what to do with an exception happening in your callback\n\
@@ -996,7 +1275,8 @@ _Watcher_callback_set(_Watcher *self, PyObject *value, void *closure)
 /* _Watcher.active */
 PyDoc_STRVAR(_Watcher_active_doc,
 "True if the watcher is active (i.e. it has been started and not yet been\n\
-stopped), False otherwise.");
+stopped), False otherwise.\n\
+As long as a watcher is active you must not modify it.");
 
 static PyObject *
 _Watcher_active_get(_Watcher *self, void *closure)
@@ -1011,8 +1291,10 @@ _Watcher_active_get(_Watcher *self, void *closure)
 
 /* _Watcher.pending */
 PyDoc_STRVAR(_Watcher_pending_doc,
-"True value if the watcher is pending, (i.e. it has outstanding events but its\n\
-callback has not yet been invoked), False otherwise.");
+"True if the watcher is pending, (i.e. it has outstanding events but its\n\
+callback has not yet been invoked), False otherwise.\n\
+As long as a watcher is pending (but not active) you must not change its\n\
+priority.");
 
 static PyObject *
 _Watcher_pending_get(_Watcher *self, void *closure)
@@ -1031,18 +1313,22 @@ PyDoc_STRVAR(_Watcher_priority_doc,
 between EV_MAXPRI (default: 2) and EV_MINPRI (default: -2). Pending watchers\n\
 with higher priority will be invoked before watchers with lower priority, but\n\
 priority will not keep watchers from being executed (except for Idle watchers).\n\
-This means that priorities are only used for ordering callback invocation after\n\
-new events have been received. This is useful, for example, to reduce latency\n\
-after idling, or more often, to bind two watchers on the same event and make\n\
-sure one is called first.\n\
 If you need to suppress invocation when higher priority events are pending you\n\
 need to look at Idle watchers, which provide this functionality.\n\
 You must not change the priority of a watcher as long as it is active or pending.\n\
-The default priority used by watchers when no priority has been set is always 0,\n\
-which is supposed to not be too high and not be too low :).\n\
 Setting a priority outside the range of EV_MINPRI to EV_MAXPRI is fine, as long\n\
 as you do not mind that the priority value you query might or might not have\n\
-been clamped to the valid range.");
+been clamped to the valid range.\n\
+The default priority used by watchers when no priority has been set is always 0,\n\
+which is supposed to not be too high and not be too low :).\n\
+\n\
+Note:\n\
+If you want to redefine EV_MINPRI/EV_MAXPRI, you need to rebuild pyev (have a\n\
+look at setup.py).\n\
+\n\
+See also:\n\
+'WATCHER PRIORITY MODELS' at libev documentation for a more thorough treatment\n\
+of priorities.");
 
 static PyObject *
 _Watcher_priority_get(_Watcher *self, void *closure)
@@ -1053,9 +1339,11 @@ _Watcher_priority_get(_Watcher *self, void *closure)
 static int
 _Watcher_priority_set(_Watcher *self, PyObject *value, void *closure)
 {
+    long priority;
+
     if (ev_is_active(self->watcher) || ev_is_pending(self->watcher)) {
-        PyErr_SetString(Pyev_Error, "you cannot change the 'priority' of a "
-                        "watcher while it is active or pending.");
+        PyErr_SetString(Error, "you cannot change the 'priority' of a watcher "
+                        "while it is active or pending.");
         return -1;
     }
 
@@ -1069,7 +1357,12 @@ _Watcher_priority_set(_Watcher *self, PyObject *value, void *closure)
         return -1;
     }
 
-    ev_set_priority(self->watcher, PyLong_AsLong(value));
+    priority = PyLong_AsLong(value);
+    if (priority == -1 && PyErr_Occurred()) {
+        return -1;
+    }
+
+    ev_set_priority(self->watcher, priority);
 
     return 0;
 }
@@ -1130,7 +1423,8 @@ static PyTypeObject _WatcherType = {
 
 /* IoType.tp_doc */
 PyDoc_STRVAR(Io_doc,
-"Io(fd, events, loop, callback, [data=None])\n\n\
+"Io(fd, events, loop, callback, [data=None])\n\
+\n\
 Io watchers check whether a file descriptor is readable or writable in each\n\
 iteration of the event loop, or, more precisely, when reading would not block\n\
 the process and writing would at least be able to write some data. This\n\
@@ -1139,29 +1433,32 @@ as the condition persists. Remember you can stop the watcher if you don't want\n
 to act on the event and neither want to receive future events.\n\
 In general you can register as many read and/or write event watchers per fd as\n\
 you want. Setting all file descriptors to non-blocking mode is also usually a\n\
-good idea.\n\
-See the ev_io section of libev documentation for a more detailed description.\n\
+good idea (but not required).\n\
 'fd': the file descriptor to be monitored (accept socket or file objects as well\n\
 int).\n\
 'events': either EV_READ, EV_WRITE or EV_READ | EV_WRITE.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_io - is this file descriptor readable or writable?' at libev documentation\n\
+for more information.");
 
 
 /* set the ev_io */
 int
 set_io(Io *self, PyObject *fd, unsigned long events)
 {
-    if (events & ~(EV_READ | EV_WRITE)) {
-        PyErr_SetString(Pyev_Error, "illegal event mask");
+    /* fd --> fdnum */
+    int fdnum = PyObject_AsFileDescriptor(fd);
+    if (fdnum == -1) {
         return -1;
     }
 
-    /* fd -> fdnum */
-    int fdnum = PyObject_AsFileDescriptor(fd);
-    if (fdnum == -1) {
+    if (events & ~(EV_READ | EV_WRITE)) {
+        PyErr_SetString(Error, "illegal event mask");
         return -1;
     }
 
@@ -1234,7 +1531,8 @@ Io_init(Io *self, PyObject *args, PyObject *kwargs)
 
 /* Io.set(fd, events) */
 PyDoc_STRVAR(Io_set_doc,
-"set(fd, events)\n\n\
+"set(fd, events)\n\
+\n\
 'fd': the file descriptor to be monitored (accept socket or file objects as well\n\
 int).\n\
 'events': either EV_READ, EV_WRITE or EV_READ | EV_WRITE.");
@@ -1352,32 +1650,38 @@ static PyTypeObject IoType = {
 
 /* TimerType.tp_doc */
 PyDoc_STRVAR(Timer_doc,
-"Timer(after, repeat, loop, callback, [data=None])\n\n\
+"Timer(after, repeat, loop, callback, [data=None])\n\
+\n\
 Timer watchers are simple relative timers that generate an event after a given\n\
 time, and optionally repeating in regular intervals after that.\n\
 The timers are based on real time, that is, if you register an event that times\n\
 out after an hour and you reset your system clock to January last year, it will\n\
 still time out after (roughly) one hour. 'Roughly' because detecting time jumps\n\
 is hard, and some inaccuracies are unavoidable.\n\
-The callback is guaranteed to be invoked only after its timeout has passed, but\n\
-if multiple timers become ready during the same loop iteration then order of\n\
-execution is undefined.\n\
-The Timer itself will do a best-effort at avoiding drift, that is, if you\n\
+The callback is guaranteed to be invoked only after its timeout has passed (not\n\
+at, so on systems with very low-resolution clocks this might introduce a small\n\
+delay). If multiple timers become ready during the same loop iteration then the\n\
+ones with earlier time-out values are invoked before ones of the same priority\n\
+with later time-out values (but this is no longer true when a callback calls\n\
+Loop.loop() recursively).\n\
+'after': configure the timer to trigger after after seconds.\n\
+If 'repeat' is 0.0, then it will automatically be stopped once the timeout is\n\
+reached. If it is positive, then the timer will automatically be configured to\n\
+trigger again 'repeat' seconds later, again, and again, until stopped manually.\n\
+The timer itself will do a best-effort at avoiding drift, that is, if you\n\
 configure a timer to trigger every 10 seconds, then it will normally trigger at\n\
 exactly 10 second intervals. If, however, your program cannot keep up with the\n\
 timer (because it takes longer than those 10 seconds to do stuff) the timer will\n\
 not fire more than once per event loop iteration.\n\
-See the ev_timer section of libev documentation, particularly the section titled\n\
-'Be smart about timeouts', for a more detailed description and usage examples.\n\
-'after': configure the timer to trigger after 'after' seconds.\n\
-'repeat': if 'repeat' is 0.0, then it will automatically be stopped once the\n\
-timeout is reached. If it is positive, then the timer will automatically be\n\
-configured to trigger again 'repeat' seconds later, again, and again, until\n\
-stopped manually.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_timer - relative and optionally repeating timeouts' at libev documentation\n\
+for more information, particularly the section titled 'Be smart about timeouts',\n\
+for usage examples.");
 
 
 /* set the ev_timer */
@@ -1456,12 +1760,17 @@ Timer_init(Timer *self, PyObject *args, PyObject *kwargs)
 
 /* Timer.set(after, repeat) */
 PyDoc_STRVAR(Timer_set_doc,
-"set(after, repeat)\n\n\
-'after': configure the timer to trigger after 'after' seconds.\n\
-'repeat': if 'repeat' is 0.0, then it will automatically be stopped once the\n\
-timeout is reached. If it is positive, then the timer will automatically be\n\
-configured to trigger again 'repeat' seconds later, again, and again, until\n\
-stopped manually.");
+"set(after, repeat)\n\
+\n\
+'after': configure the timer to trigger after after seconds.\n\
+If 'repeat' is 0.0, then it will automatically be stopped once the timeout is\n\
+reached. If it is positive, then the timer will automatically be configured to\n\
+trigger again 'repeat' seconds later, again, and again, until stopped manually.\n\
+The timer itself will do a best-effort at avoiding drift, that is, if you\n\
+configure a timer to trigger every 10 seconds, then it will normally trigger at\n\
+exactly 10 second intervals. If, however, your program cannot keep up with the\n\
+timer (because it takes longer than those 10 seconds to do stuff) the timer will\n\
+not fire more than once per event loop iteration.");
 
 static PyObject *
 Timer_set(Timer *self, PyObject *args)
@@ -1506,15 +1815,17 @@ Timer_stop(Timer *self)
 
 /* Timer.again() */
 PyDoc_STRVAR(Timer_again_doc,
-"again()\n\n\
+"again()\n\
+\n\
 This will act as if the timer timed out and restart it again if it is repeating.\n\
 The exact semantics are:\n\
 If the timer is pending, its pending status is cleared.\n\
 If the timer is started but non-repeating, stop it (as if it timed out).\n\
-If the timer is repeating, either start it if necessary (with the current repeat\n\
-value), or reset the running timer to the current repeat value.\n\
-This sounds a bit complicated, see 'Be smart about timeouts', in the ev_timer\n\
-section of libev documentation, for a usage example.");
+If the timer is repeating, either start it if necessary (with the repeat value),\n\
+or reset the running timer to the repeat value.\n\
+\n\
+See also:\n\
+'Be smart about timeouts' at libev documentation for a usage example.");
 
 static PyObject *
 Timer_again(Timer *self)
@@ -1522,6 +1833,26 @@ Timer_again(Timer *self)
     ev_timer_again(((_Watcher *)self)->loop->loop, &self->timer);
 
     Py_RETURN_NONE;
+}
+
+
+/* Timer.remaining() -> float */
+PyDoc_STRVAR(Timer_remaining_doc,
+"remaining() -> float\n\
+\n\
+Returns the remaining time until a timer fires. If the timer is active, then\n\
+this time is relative to the current event loop time, otherwise it's the timeout\n\
+value currently configured.\n\
+That is, after an Timer.set(5, 7), Timer.remaining() returns 5. When the timer\n\
+is started and one second passes, Timer.remaining() will return 4. When the\n\
+timer expires and is restarted, it will return roughly 7 (likely slightly less\n\
+as callback invocation takes some time, too), and so on.");
+
+static PyObject *
+Timer_remaining(Timer *self)
+{
+    return PyFloat_FromDouble(ev_timer_remaining(((_Watcher *)self)->loop->loop,
+                                                 &self->timer));
 }
 
 
@@ -1535,15 +1866,17 @@ static PyMethodDef Timer_methods[] = {
      METH_NOARGS, _Watcher_stop_doc},
     {"again", (PyCFunction)Timer_again,
      METH_NOARGS, Timer_again_doc},
+    {"remaining", (PyCFunction)Timer_remaining,
+     METH_NOARGS, Timer_remaining_doc},
     {NULL}  /* Sentinel */
 };
 
 
 /* Timer.repeat */
 PyDoc_STRVAR(Timer_repeat_doc,
-"The current repeat value. Will be used each time the watcher times out or \n\
-again() is called, and determines the next timeout (if any), which is also when\n\
-any modifications are taken into account.");
+"The current repeat value. Will be used each time the watcher times out or\n\
+Timer.again() is called, and determines the next timeout (if any), which is also\n\
+when any modifications are taken into account.");
 
 static PyObject *
 Timer_repeat_get(Timer *self, void *closure)
@@ -1635,58 +1968,58 @@ static PyTypeObject TimerType = {
 
 /* PeriodicType.tp_doc */
 PyDoc_STRVAR(Periodic_doc,
-"Periodic(offset, interval, reschedule_cb, loop, callback, [data=None])\n\n\
+"Periodic(offset, interval, reschedule_cb, loop, callback, [data=None])\n\
+\n\
 Periodic watchers are also timers of a kind, but they are very versatile (and\n\
 unfortunately a bit complex).\n\
-Unlike Timer, Periodic watchers are not based on real time (or relative time,\n\
+Unlike Timer, periodic watchers are not based on real time (or relative time,\n\
 the physical time that passes) but on wall clock time (absolute time, the thing\n\
 you can read on your calender or clock). The difference is that wall clock time\n\
 can run faster or slower than real time, and time jumps are not uncommon (e.g.\n\
 when you adjust your wrist-watch).\n\
-You can tell a Periodic watcher to trigger after some specific point in time:\n\
+You can tell a periodic watcher to trigger after some specific point in time:\n\
 for example, if you tell a periodic watcher to trigger 'in 10 seconds' (by\n\
-specifying e.g. Loop.now () + 10.0, that is, an absolute time not a delay) and\n\
+specifying e.g. Loop.now() + 10.0, that is, an absolute time not a delay) and\n\
 then reset your system clock to January of the previous year, then it will take\n\
-a year or more to trigger the event (unlike a Timer, which would still trigger\n\
+a year or more to trigger the event (unlike an Timer, which would still trigger\n\
 roughly 10 seconds after starting it, as it uses a relative timeout).\n\
 Periodic watchers can also be used to implement vastly more complex timers, such\n\
 as triggering an event on each 'midnight, local time', or other complicated\n\
 rules. This cannot be done with Timer watchers, as those cannot react to time\n\
 jumps.\n\
 As with Timers, the callback is guaranteed to be invoked only when the point in\n\
-time where it is supposed to trigger has passed, but if multiple periodic timers\n\
-become ready during the same loop iteration, then order of execution is\n\
-undefined.\n\
-See the ev_periodic section of libev documentation for a more detailed\n\
-description, you need to read it to understand the different modes of operation\n\
-triggered by the arguments.\n\
+time where it is supposed to trigger has passed. If multiple timers become ready\n\
+during the same loop iteration then the ones with earlier time-out values are\n\
+invoked before ones with later time-out values (but this is no longer true when\n\
+a callback calls Loop.loop() recursively).\n\
 'offset': float.\n\
 'interval': positive float or 0.0.\n\
 'reschedule_cb': callable returning the next time to trigger, based on the\n\
 passed time value. If 'reschedule_cb' is not needed you must set it to None.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_periodic - to cron or not to cron?' at libev documentation for a more\n\
+detailed description, you need to read it to understand the different modes of\n\
+operation triggered by the arguments.");
 
 
 /* periodic reschedule stop callback */
-void
+static void
 periodic_reschedule_stop(struct ev_loop *loop, ev_prepare *prepare, int events)
 {
-    PyGILState_STATE gstate = PyGILState_Ensure();
-
     ev_periodic_stop(loop, (ev_periodic *)prepare->data);
     ev_prepare_stop(loop, prepare);
 
-    PyMem_Free(prepare);
-
-    PyGILState_Release(gstate);
+    free(prepare);
 }
 
 
 /* periodic reschedule callback */
-double
+static double
 periodic_reschedule_cb(ev_periodic *watcher, double now)
 {
     PyGILState_STATE gstate = PyGILState_Ensure();
@@ -1700,32 +2033,28 @@ periodic_reschedule_cb(ev_periodic *watcher, double now)
     if (!py_result) {
         goto error;
     }
+    else if (!PyFloat_Check(py_result)) {
+        PyErr_SetString(PyExc_TypeError, "reschedule_cb must return a float");
+        goto error;
+    }
     else {
-        if (!PyFloat_Check(py_result)) {
-            PyErr_SetString(PyExc_TypeError,
-                            "reschedule_cb must return a float");
+        result = PyFloat_AS_DOUBLE(py_result);
+        if (result < now) {
+            PyErr_SetString(Error, "returned value must be >= 'now' param");
             goto error;
         }
-        else {
-            result = PyFloat_AS_DOUBLE(py_result);
-            if (result < now) {
-                PyErr_SetString(Pyev_Error,
-                                "returned value must be >= 'now' param");
-                goto error;
-            }
-            goto finish;
-        }
+        goto finish;
     }
 
 error:
     /* inform the user we're going to stop this periodic */
     PyErr_WriteUnraisable(periodic->reschedule_cb);
-    PyErr_Format(Pyev_Error, "due to previous error, "
-                 "<pyev.Periodic object at %p> will be stopped", periodic);
+    PyErr_Format(Error, "due to previous error, <pyev.Periodic object at %p> "
+                 "will be stopped", periodic);
     PyErr_WriteUnraisable(periodic->reschedule_cb);
 
     /* start an ev_prepare watcher that will stop this periodic */
-    prepare = PyMem_Malloc(sizeof(ev_prepare));
+    prepare = malloc(sizeof(ev_prepare));
     if (!prepare) {
         PyErr_NoMemory();
         ev_unloop(((_Watcher *)periodic)->loop->loop, EVUNLOOP_ALL);
@@ -1756,6 +2085,11 @@ set_periodic(Periodic *self, double offset, double interval,
         return -1;
     }
 
+    /* self->reschedule_cb */
+    if (Periodic_reschedule_cb_set(self, reschedule_cb, (void *)1)) {
+        return -1;
+    }
+
     if (reschedule_cb != Py_None) {
         ev_periodic_set(&self->periodic, offset, interval,
                         periodic_reschedule_cb);
@@ -1774,11 +2108,11 @@ Periodic_dealloc(Periodic *self)
 {
     _Watcher *_watcher = (_Watcher *)self;
 
+    Py_XDECREF(self->reschedule_cb);
+
     if (_watcher->loop && &self->periodic) {
         ev_periodic_stop(_watcher->loop->loop, &self->periodic);
     }
-
-    Py_XDECREF(self->reschedule_cb);
 
     _WatcherType.tp_dealloc((PyObject *)self);
 }
@@ -1823,11 +2157,6 @@ Periodic_init(Periodic *self, PyObject *args, PyObject *kwargs)
         return -1;
     }
 
-    /* self->reschedule_cb */
-    if (Periodic_reschedule_cb_set(self, reschedule_cb, (void *)1)) {
-        return -1;
-    }
-
     if (set_periodic(self, offset, interval, reschedule_cb)) {
         return -1;
     }
@@ -1838,14 +2167,17 @@ Periodic_init(Periodic *self, PyObject *args, PyObject *kwargs)
 
 /* Periodic.set(offset, interval, reschedule_cb) */
 PyDoc_STRVAR(Periodic_set_doc,
-"set(offset, interval, reschedule_cb)\n\n\
-See the ev_periodic section of libev documentation for a more detailed\n\
-description, you need to read it to understand the different modes of operation\n\
-triggered by the arguments.\n\
+"set(offset, interval, reschedule_cb)\n\
+\n\
 'offset': float.\n\
 'interval': positive float or 0.0.\n\
 'reschedule_cb': callable returning the next time to trigger, based on the\n\
-passed time value. If 'reschedule_cb' is not needed you must set it to None.");
+passed time value. If 'reschedule_cb' is not needed you must set it to None.\n\
+\n\
+See also:\n\
+'ev_periodic - to cron or not to cron?' at libev documentation for a more\n\
+detailed description, you need to read it to understand the different modes of\n\
+operation triggered by the arguments.");
 
 static PyObject *
 Periodic_set(Periodic *self, PyObject *args)
@@ -1858,10 +2190,6 @@ Periodic_set(Periodic *self, PyObject *args)
     }
 
     if (set_watcher((_Watcher *)self)) {
-        return NULL;
-    }
-
-    if (Periodic_reschedule_cb_set(self, reschedule_cb, (void *)1)) {
         return NULL;
     }
 
@@ -1895,7 +2223,8 @@ Periodic_stop(Periodic *self)
 
 /* Periodic.again() */
 PyDoc_STRVAR(Periodic_again_doc,
-"again()\n\n\
+"again()\n\
+\n\
 Simply stops and restarts the Periodic watcher again. This is only useful when\n\
 you changed some parameters or the reschedule callback would return a different\n\
 time than the last time it was called (e.g. in a crond like program when the\n\
@@ -1912,10 +2241,11 @@ Periodic_again(Periodic *self)
 
 /* Periodic.at() -> float */
 PyDoc_STRVAR(Periodic_at_doc,
-"at() -> float\n\n\
-When active, returns the absolute time that this watcher is supposed to trigger\n\
-next. This is not the same as the offset attribute, but indeed works even in\n\
-interval and manual rescheduling modes.");
+"at() -> float\n\
+\n\
+When active, returns the absolute time that the watcher is supposed to trigger\n\
+next. This is not the same as the offset argument to Periodic.set(), but indeed\n\
+works even in interval and manual rescheduling modes.");
 
 static PyObject *
 Periodic_at(Periodic *self)
@@ -1940,18 +2270,27 @@ static PyMethodDef Periodic_methods[] = {
 };
 
 
+/* Periodic.offset - doc only */
+PyDoc_STRVAR(Periodic_offset_doc,
+"When repeating, this contains the offset value, otherwise this is the absolute\n\
+point in time (the offset value passed to Periodic.set(), although libev might\n\
+modify this value for better numerical stability). Can be modified any time, but\n\
+changes only take effect when the periodic timer fires or Periodic.again() is\n\
+being called.");
+
+
 /* PeriodicType.tp_members */
 static PyMemberDef Periodic_members[] = {
     {"offset", T_DOUBLE, offsetof(Periodic, periodic.offset), 0,
-     "When repeating, this contains the offset value, otherwise this is the "
-     "absolute point in time."},
+     Periodic_offset_doc},
     {NULL}  /* Sentinel */
 };
 
 
 /* Periodic.interval */
 PyDoc_STRVAR(Periodic_interval_doc,
-"The current interval value.");
+"The current interval value. Can be modified any time, but changes only take\n\
+effect when the periodic timer fires or Periodic.again() is being called.");
 
 static PyObject *
 Periodic_interval_get(Periodic *self, void *closure)
@@ -1988,14 +2327,16 @@ Periodic_interval_set(Periodic *self, PyObject *value, void *closure)
 
 /* Periodic.reschedule_cb */
 PyDoc_STRVAR(Periodic_reschedule_cb_doc,
-"The current reschedule callback, or None, if this functionality is switched off.\n\
+"The current reschedule callback, or None if this functionality is switched off.\n\
 If given, its signature must be: reschedule_cb(periodic, now).\n\
 'periodic' will be the Periodic watcher receiving the event, while 'now' will be\n\
 a float indicating the time the callback has been invoked.\n\
 It must return a float greater than or equal to the 'now' argument to indicate\n\
 the next time the watcher callback should be scheduled.\n\
 If reschedule_cb raises an error, pyev will try and stop this watcher, printing\n\
-a warning in the process (this behaviour might change in future release).");
+a warning in the process (this behaviour might change in future release).\n\
+Can be changed any time, but changes only take effect when the periodic timer\n\
+fires or Periodic.again() is being called.");
 
 static PyObject *
 Periodic_reschedule_cb_get(Periodic *self, void *closure)
@@ -2018,10 +2359,6 @@ Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure)
         PyErr_SetString(PyExc_TypeError, "a callable or None is required");
         return -1;
     }
-    tmp = self->reschedule_cb;
-    Py_INCREF(value);
-    self->reschedule_cb = value;
-    Py_XDECREF(tmp);
 
     if (!closure) {
         if (value != Py_None) {
@@ -2032,6 +2369,11 @@ Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure)
         }
     }
 
+    tmp = self->reschedule_cb;
+    Py_INCREF(value);
+    self->reschedule_cb = value;
+    Py_XDECREF(tmp);
+
     return 0;
 }
 
@@ -2041,7 +2383,8 @@ static PyGetSetDef Periodic_getsets[] = {
     {"interval", (getter)Periodic_interval_get, (setter)Periodic_interval_set,
      Periodic_interval_doc, NULL},
     {"reschedule_cb", (getter)Periodic_reschedule_cb_get,
-     (setter)Periodic_reschedule_cb_set, Periodic_reschedule_cb_doc, NULL},
+     (setter)Periodic_reschedule_cb_set,
+     Periodic_reschedule_cb_doc, NULL},
     {NULL}  /* Sentinel */
 };
 
@@ -2095,36 +2438,55 @@ static PyTypeObject PeriodicType = {
 
 /* SignalType.tp_doc */
 PyDoc_STRVAR(Signal_doc,
-"Signal(signum, loop, callback, [data=None])\n\n\
+"Signal(signum, loop, callback, [data=None])\n\
+\n\
 Signal watchers will trigger an event when the process receives a specific\n\
 signal one or more times. Even though signals are very asynchronous, libev will\n\
 try it's best to deliver signals synchronously, i.e. as part of the normal event\n\
 processing, like any other event.\n\
-You can configure as many watchers as you like per signal. Only when the first\n\
-watcher gets started will libev actually register a signal handler with the\n\
-kernel (thus it coexists with your own signal handlers as long as you don't\n\
-register any with libev for the same signal). Similarly, when the last signal\n\
-watcher for a signal is stopped, libev will reset the signal handler to SIG_DFL\n\
-(regardless of what it was set to before).\n\
-If possible and supported, libev will install its handlers with SA_RESTART\n\
-behaviour enabled, so system calls should not be unduly interrupted. If you have\n\
-a problem with system calls getting interrupted by signals you can block all\n\
-signals in a Check watcher and unblock them in a Prepare watcher.\n\
+If you want signals to be delivered truly asynchronously, just use sigaction as\n\
+you would do without libev and forget about sharing the signal. You can even use\n\
+an Async watcher from a signal handler to synchronously wake up an event loop.\n\
+You can configure as many watchers as you like for the same signal, but only\n\
+within the same loop, i.e. you can watch for SIGINT in your 'default loop' and\n\
+for SIGIO in another loop, but you cannot watch for SIGINT in both the 'default\n\
+loop' and another loop at the same time. At the moment, SIGCHLD is permanently\n\
+tied to the 'default loop'.\n\
+When the first watcher gets started will libev actually register something with\n\
+the kernel (thus it coexists with your own signal handlers as long as you don't\n\
+register any with libev for the same signal).\n\
+If possible and supported, libev will install its handlers with SA_RESTART (or\n\
+equivalent) behaviour enabled, so system calls should not be unduly interrupted.\n\
+If you have a problem with system calls getting interrupted by signals you can\n\
+block all signals in a Check watcher and unblock them in a Prepare watcher.\n\
 'signum': the signal number to be monitored (usually one of the SIG* constants).\n\
-'loop': the 'default loop'.\n\
+'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_signal - signal me when a signal gets signalled!' at libev documentation\n\
+for more information.");
 
 
 /* set the ev_signal */
 int
 set_signal(Signal *self, int signum)
 {
-    if (signum <= 0) {
-        PyErr_SetString(Pyev_Error, "illegal signal number");
+    struct ev_loop *loop = ((_Watcher *)self)->loop->loop;
+
+    if (signum <= 0 || signum >= EV_NSIG) {
+        PyErr_SetString(Error, "illegal signal number");
         return -1;
     }
+
+    if (signals[signum - 1].loop && signals[signum - 1].loop != loop) {
+        PyErr_SetString(Error, "the same signal must not be attached to two "
+                        "different loops");
+        return -1;
+    }
+    signals[signum - 1].loop = loop;
 
     ev_signal_set(&self->signal, signum);
 
@@ -2180,7 +2542,7 @@ Signal_init(Signal *self, PyObject *args, PyObject *kwargs)
         return -1;
     }
 
-    if (_Watcher_init((_Watcher *)self, loop, callback, data, 1, NULL)) {
+    if (_Watcher_init((_Watcher *)self, loop, callback, data, 0, NULL)) {
         return -1;
     }
 
@@ -2194,7 +2556,8 @@ Signal_init(Signal *self, PyObject *args, PyObject *kwargs)
 
 /* Signal.set(signum) */
 PyDoc_STRVAR(Signal_set_doc,
-"set(signum)\n\n\
+"set(signum)\n\
+\n\
 'signum': the signal number to be monitored (usually one of the SIG* constants).");
 
 static PyObject *
@@ -2307,24 +2670,28 @@ static PyTypeObject SignalType = {
 
 /* ChildType.tp_doc */
 PyDoc_STRVAR(Child_doc,
-"Child(pid, trace, loop, callback, [data=None])\n\n\
+"Child(pid, trace, loop, callback, [data=None])\n\
+\n\
 Child watchers trigger when your process receives a SIGCHLD in response to some\n\
 child status changes (most typically when a child of yours dies or exits). It is\n\
 permissible to install a child watcher after the child has been forked (which\n\
 implies it might have already exited), as long as the event loop isn't entered\n\
 (or is continued from a watcher), i.e., forking and then immediately registering\n\
 a watcher for the child is fine, but forking and registering a watcher a few\n\
-event loop iterations later is not.\n\
-See the ev_child section of libev documentation for a more detailed description.\n\
+event loop iterations later or in the next callback invocation is not.\n\
+You can only register Child watchers in the 'default loop'.\n\
 'pid': wait for status changes of process 'pid' (or any process if 'pid' is\n\
 specified as 0).\n\
-'trace': if False only activate the watcher when the process terminates,\n\
-if True additionally activate the watcher when the process is stopped or\n\
-continued.\n\
+'trace': if False only activate the watcher when the process terminates, if True\n\
+additionally activate the watcher when the process is stopped or continued.\n\
 'loop': the 'default loop'.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_child - watch out for process status changes' at libev documentation for\n\
+more information.");
 
 
 /* set the ev_child */
@@ -2405,12 +2772,12 @@ Child_init(Child *self, PyObject *args, PyObject *kwargs)
 
 /* Child.set(pid, trace) */
 PyDoc_STRVAR(Child_set_doc,
-"set(pid, trace)\n\n\
+"set(pid, trace)\n\
+\n\
 'pid': wait for status changes of process 'pid' (or any process if 'pid' is\n\
 specified as 0).\n\
-'trace': if False only activate the watcher when the process terminates,\n\
-if True additionally activate the watcher when the process is stopped or\n\
-continued.");
+'trace': if False only activate the watcher when the process terminates, if True\n\
+additionally activate the watcher when the process is stopped or continued.");
 
 static PyObject *
 Child_set(Child *self, PyObject *args)
@@ -2529,7 +2896,9 @@ static PyTypeObject ChildType = {
 Statdata *
 new_statdata(PyTypeObject *type, ev_statdata *statdata)
 {
-    Statdata *self = (Statdata *)type->tp_alloc(type, 0);
+    Statdata *self;
+
+    self = (Statdata *)type->tp_alloc(type, 0);
     if (!self) {
         return NULL;
     }
@@ -2616,30 +2985,41 @@ static PyTypeObject StatdataType = {
 
 /* StatType.tp_doc */
 PyDoc_STRVAR(Stat_doc,
-"Stat(path, interval, loop, callback, [data=None])\n\n\
-This watches a file system path for attribute changes. That is, it calls stat on\n\
-that path in regular intervals (or when the OS says it changed) and sees if it\n\
-changed compared to the last time, invoking the callback if it did.\n\
-See the ev_stat section of libev documentation for a more detailed description.\n\
-'path': the path does not need to exist: changing from 'path exists' to 'path\n\
-does not exist' is a status change like any other. The condition 'path does not\n\
-exist' (or more correctly 'path cannot be stated') is signified by the nlink\n\
-attribute being zero (which is otherwise always forced to be at least one) and\n\
-all the other attributes of the Statdata object (Stat.attr or Stat.prev) having\n\
-unspecified contents. The path must not end in a slash or contain special\n\
-components such as . or ... The path should be absolute: if it is relative and\n\
-your working directory changes, then the behaviour is undefined.\n\
-'interval': since there is no portable change notification interface available,\n\
-the portable implementation simply calls stat(2) regularly on the path to see if\n\
-it changed somehow. You can specify a recommended polling interval for this case.\n\
-If you specify a polling interval of 0 (highly recommended!) then a suitable,\n\
+"Stat(path, interval, loop, callback, [data=None])\n\
+\n\
+This watches a file system path for attribute changes. That is, it calls stat()\n\
+on that path in regular intervals (or when the OS says it changed) and sees if\n\
+it changed compared to the last time, invoking the callback if it did.\n\
+The path does not need to exist: changing from 'path exists' to 'path does not\n\
+exist' is a status change like any other. The condition 'path does not exist'\n\
+(or more correctly 'path cannot be stated') is signified by the nlink field\n\
+being zero (which is otherwise always forced to be at least one) and all the\n\
+other fields of the Statdata object having unspecified contents.\n\
+The path must not end in a slash or contain special components such as '.' or\n\
+'..'. The path should be absolute: if it is relative and your working directory\n\
+changes, then the behaviour is undefined.\n\
+Since there is no portable change notification interface available, the portable\n\
+implementation simply calls stat(2) regularly on the path to see if it changed\n\
+somehow. You can specify a recommended polling interval for this case. If you\n\
+specify a polling interval of 0 (highly recommended!) then a suitable,\n\
 unspecified default value will be used (which you can expect to be around five\n\
-seconds, although this might change dynamically). Libev will also impose a\n\
+seconds, although this might change dynamically). libev will also impose a\n\
 minimum interval which is currently around 0.1, but that's usually overkill.\n\
+This watcher type is not meant for massive numbers of stat watchers, as even\n\
+with OS-supported change notifications, this can be resource-intensive.\n\
+At the time of this writing, the only OS-specific interface implemented is the\n\
+Linux inotify interface.\n\
+'path': configures the watcher to wait for status changes of the given path.\n\
+'interval': hint (in seconds) on how quickly a change is expected to be detected\n\
+and should normally be specified as 0 to let libev choose a suitable value.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_stat - did the file attributes just change?' at libev documentation for more\n\
+information.");
 
 
 /* update Stat attr and prev member */
@@ -2667,12 +3047,12 @@ Stat_dealloc(Stat *self)
 {
     _Watcher *_watcher = (_Watcher *)self;
 
+    Py_XDECREF(self->prev);
+    Py_XDECREF(self->attr);
+
     if (_watcher->loop && &self->stat) {
         ev_stat_stop(_watcher->loop->loop, &self->stat);
     }
-
-    Py_XDECREF(self->attr);
-    Py_XDECREF(self->prev);
 
     _WatcherType.tp_dealloc((PyObject *)self);
 }
@@ -2725,22 +3105,11 @@ Stat_init(Stat *self, PyObject *args, PyObject *kwargs)
 
 /* Stat.set(path, interval) */
 PyDoc_STRVAR(Stat_set_doc,
-"set(path, interval)\n\n\
-'path': the path does not need to exist: changing from 'path exists' to 'path\n\
-does not exist' is a status change like any other. The condition 'path does not\n\
-exist' (or more correctly 'path cannot be stated') is signified by the nlink\n\
-attribute being zero (which is otherwise always forced to be at least one) and\n\
-all the other attributes of the Statdata object (Stat.attr or Stat.prev) having\n\
-unspecified contents. The path must not end in a slash or contain special\n\
-components such as . or ... The path should be absolute: if it is relative and\n\
-your working directory changes, then the behaviour is undefined.\n\
-'interval': since there is no portable change notification interface available,\n\
-the portable implementation simply calls stat(2) regularly on the path to see if\n\
-it changed somehow. You can specify a recommended polling interval for this case.\n\
-If you specify a polling interval of 0 (highly recommended!) then a suitable,\n\
-unspecified default value will be used (which you can expect to be around five\n\
-seconds, although this might change dynamically). Libev will also impose a\n\
-minimum interval which is currently around 0.1, but that's usually overkill.");
+"set(path, interval)\n\
+\n\
+'path': configures the watcher to wait for status changes of the given path.\n\
+'interval': hint (in seconds) on how quickly a change is expected to be detected\n\
+and should normally be specified as 0 to let libev choose a suitable value.");
 
 static PyObject *
 Stat_set(Stat *self, PyObject *args)
@@ -2788,27 +3157,25 @@ Stat_stop(Stat *self)
 
 /* Stat.stat() */
 PyDoc_STRVAR(Stat_stat_doc,
-"stat()\n\n\
-Updates the Stat.attr immediately. If you change the watched path in your\n\
-callback, you could call this function to avoid detecting this change (while\n\
-introducing a race condition if you are not the only one changing the path).\n\
-Can also be useful simply to find out the new values.");
+"stat()\n\
+\n\
+Updates Stat.attr immediately with new values. If you change the watched path in\n\
+your callback, you could call this function to avoid detecting this change\n\
+(while introducing a race condition if you are not the only one changing the\n\
+path). Can also be useful simply to find out the new values.");
 
 static PyObject *
 Stat_stat(Stat *self)
 {
-    Py_BEGIN_ALLOW_THREADS
-
     ev_stat_stat(((_Watcher *)self)->loop->loop, &self->stat);
-
-    Py_END_ALLOW_THREADS
 
     if (update_stat(self)) {
         return NULL;
     }
 
     if (self->stat.attr.st_nlink == 0) {
-        return PyErr_SetFromErrnoWithFilename(PyExc_OSError, self->stat.path);
+        return PyErr_SetFromErrnoWithFilename(PyExc_OSError,
+                                              (char *)self->stat.path);
     }
 
     Py_RETURN_NONE;
@@ -2831,15 +3198,15 @@ static PyMethodDef Stat_methods[] = {
 
 /* Stat.attr - doc only */
 PyDoc_STRVAR(Stat_attr_doc,
-"The most-recently detected attributes of the file. If the nlink attribute is 0,\n\
-then there was some error while stating the file.");
+"The most-recently detected attributes of the file.\n\
+If the nlink attribute is 0, then there was some error while stating the file.");
 
 
 /* Stat.prev - doc only */
 PyDoc_STRVAR(Stat_prev_doc,
 "The previous attributes of the file.\n\
 The callback gets invoked whenever Stat.prev != Stat.attr, or, more precisely,\n\
-one or more of these members differ: dev, ino, mode, nlink, uid, gid, rdev,\n\
+one or more of these attributes differ: dev, ino, mode, nlink, uid, gid, rdev,\n\
 size, atime, mtime, ctime.");
 
 
@@ -2906,26 +3273,29 @@ static PyTypeObject StatType = {
 
 /* IdleType.tp_doc */
 PyDoc_STRVAR(Idle_doc,
-"Idle(loop, callback, [data=None])\n\n\
+"Idle(loop, callback, [data=None])\n\
+\n\
 Idle watchers trigger events when no other events of the same or higher priority\n\
 are pending (Prepare, Check and other Idle watchers do not count as receiving\n\
-'events').\n\
-That is, as long as your process is busy handling sockets or timeouts (or even\n\
-signals, imagine) of the same or higher priority it will not be triggered. But\n\
-when your process is idle (or only lower-priority watchers are pending), the\n\
-Idle watchers are being called once per event loop iteration - until stopped,\n\
-that is, or your process receives more events and becomes busy again with higher\n\
-priority stuff.\n\
+'events'). That is, as long as your process is busy handling sockets or timeouts\n\
+(or even signals, imagine) of the same or higher priority it will not be\n\
+triggered. But when your process is idle (or only lower-priority watchers are\n\
+pending), the idle watchers are being called once per event loop iteration -\n\
+until stopped, that is, or your process receives more events and becomes busy\n\
+again with higher priority stuff.\n\
 The most noteworthy effect is that as long as any idle watchers are active, the\n\
-process will not block when waiting for new events.\n\
-Apart from keeping your process non-blocking (which is a useful effect on its\n\
-own sometimes), Idle watchers are a good place to do 'pseudo-background\n\
-processing', or delay processing stuff to after the event loop has handled all\n\
-outstanding events.\n\
+process will not block when waiting for new events. Apart from keeping your\n\
+process non-blocking (which is a useful effect on its own sometimes), Idle\n\
+watchers are a good place to do 'pseudo-background processing', or delay\n\
+processing stuff to after the event loop has handled all outstanding events.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_idle - when you've got nothing better to do...' at libev documentation for\n\
+more information.");
 
 
 /* IdleType.tp_dealloc */
@@ -3059,15 +3429,29 @@ static PyTypeObject IdleType = {
 
 /* PrepareType.tp_doc */
 PyDoc_STRVAR(Prepare_doc,
-"Prepare(loop, callback, [data=None])\n\n\
+"Prepare(loop, callback, [data=None])\n\
+\n\
 Prepare and Check watchers are usually (but not always) used in pairs: Prepare\n\
-watchers get invoked before the process blocks and Check watchers afterwards.\n\
-See the ev_prepare and ev_check section of libev documentation for a more\n\
-detailed description (really, you should).\n\
+watchers get invoked before the process blocks and check watchers afterwards.\n\
+You must not call Loop.loop() or similar functions that enter the current event\n\
+loop from either Prepare or Check watchers callback. Other loops than the\n\
+current one are fine, however. The rationale behind this is that you do not need\n\
+to check for recursion in those watchers, i.e. the sequence will always be:\n\
+Prepare --> blocking --> Check, so if you have one watcher of each kind they\n\
+will always be called in pairs bracketing the blocking call.\n\
+Their main purpose is to integrate other event mechanisms into libev and their\n\
+use is somewhat advanced. They could be used, for example, to track variable\n\
+changes, implement your own watchers, integrate net-snmp or a coroutine library\n\
+and lots more. They are also occasionally useful if you cache some data and want\n\
+to flush it before blocking.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_prepare and ev_check - customise your event loop!' at libev documentation\n\
+for more information.");
 
 
 /* PrepareType.tp_dealloc */
@@ -3201,15 +3585,29 @@ static PyTypeObject PrepareType = {
 
 /* CheckType.tp_doc */
 PyDoc_STRVAR(Check_doc,
-"Check(loop, callback, [data=None])\n\n\
+"Check(loop, callback, [data=None])\n\
+\n\
 Prepare and Check watchers are usually (but not always) used in pairs: Prepare\n\
-watchers get invoked before the process blocks and Check watchers afterwards.\n\
-See the ev_prepare and ev_check section of libev documentation for a more\n\
-detailed description (really, you should).\n\
+watchers get invoked before the process blocks and check watchers afterwards.\n\
+You must not call Loop.loop() or similar functions that enter the current event\n\
+loop from either Prepare or Check watchers callback. Other loops than the\n\
+current one are fine, however. The rationale behind this is that you do not need\n\
+to check for recursion in those watchers, i.e. the sequence will always be:\n\
+Prepare --> blocking --> Check, so if you have one watcher of each kind they\n\
+will always be called in pairs bracketing the blocking call.\n\
+Their main purpose is to integrate other event mechanisms into libev and their\n\
+use is somewhat advanced. They could be used, for example, to track variable\n\
+changes, implement your own watchers, integrate net-snmp or a coroutine library\n\
+and lots more. They are also occasionally useful if you cache some data and want\n\
+to flush it before blocking.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_prepare and ev_check - customise your event loop!' at libev documentation\n\
+for more information.");
 
 
 /* CheckType.tp_dealloc */
@@ -3343,22 +3741,41 @@ static PyTypeObject CheckType = {
 
 /* EmbedType.tp_doc */
 PyDoc_STRVAR(Embed_doc,
-"Embed(other, loop, callback, [data=None])\n\n\
+"Embed(other, loop, callback, [data=None])\n\
+\n\
 This is a rather advanced watcher type that lets you embed one event loop into\n\
-another (currently only Io watchers are supported in the embedded loop, other\n\
+another (currently only Io events are supported in the embedded loop, other\n\
 types of watchers might be handled in a delayed or incorrect fashion and must\n\
 not be used).\n\
-See the ev_embed section of libev documentation for a more detailed description.\n\
-'other': a pyev.Loop to embed, the given 'other' must be embeddable (i.e. its\n\
-backend must be in the set of embeddable backends).\n\
+There are primarily two reasons you would want that: work around bugs and\n\
+prioritise I/O.\n\
+As an example for a bug workaround, the kqueue backend might only support\n\
+sockets on some platform, so it is unusable as generic backend, but you still\n\
+want to make use of it because you have many sockets and it scales so nicely. In\n\
+this case, you would create a kqueue-based loop and embed it into your default\n\
+loop (which might use e.g. poll). Overall operation will be a bit slower because\n\
+first libev has to call poll and then kevent, but at least you can use both\n\
+mechanisms for what they are best: kqueue for scalable sockets and poll if you\n\
+want it to work :)\n\
+As for prioritising I/O: under rare circumstances you have the case where some\n\
+fds have to be watched and handled very quickly (with low latency), and even\n\
+priorities and Idle watchers might have too much overhead. In this case you\n\
+would put all the high priority stuff in one loop and all the rest in a second\n\
+one, and embed the second one in the first.\n\
+'other': the pyev.Loop to embed, this loop must be embeddable (i.e. its backend\n\
+must be in the set of embeddable backends).\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered. If the\n\
 callback is None, then Embed.sweep() will be invoked automatically, otherwise it\n\
 is the responsibility of the callback to invoke it (it will continue to be\n\
 called until the sweep has been done, if you do not want that, you need to\n\
 temporarily stop the Embed watcher).\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_embed - when one backend isn't enough...' at libev documentation for more\n\
+information.");
 
 
 /* set the ev_embed */
@@ -3373,7 +3790,7 @@ set_embed(Embed *self, Loop *other)
     }
 
     if (!(ev_backend(other->loop) & ev_embeddable_backends())) {
-        PyErr_SetString(Pyev_Error, "'other' must be embeddable");
+        PyErr_SetString(Error, "'other' must be embeddable");
         return -1;
     }
 
@@ -3394,11 +3811,11 @@ Embed_dealloc(Embed *self)
 {
     _Watcher *_watcher = (_Watcher *)self;
 
+    Py_XDECREF(self->other);
+
     if (_watcher->loop && &self->embed) {
         ev_embed_stop(_watcher->loop->loop, &self->embed);
     }
-
-    Py_XDECREF(self->other);
 
     _WatcherType.tp_dealloc((PyObject *)self);
 }
@@ -3450,9 +3867,10 @@ Embed_init(Embed *self, PyObject *args, PyObject *kwargs)
 
 /* Embed.set(other) */
 PyDoc_STRVAR(Embed_set_doc,
-"set(other)\n\n\
-'other': a pyev.Loop to embed, the given 'other' must be embeddable (i.e. its\n\
-backend must be in the set of embeddable backends).");
+"set(other)\n\
+\n\
+'other': the pyev.Loop to embed, this loop must be embeddable (i.e. its backend\n\
+must be in the set of embeddable backends).");
 
 static PyObject *
 Embed_set(Embed *self, PyObject *args)
@@ -3497,10 +3915,11 @@ Embed_stop(Embed *self)
 
 /* Embed.sweep() */
 PyDoc_STRVAR(Embed_sweep_doc,
-"sweep()\n\n\
+"sweep()\n\
+\n\
 Make a single, non-blocking sweep over the embedded loop. This works similarly\n\
-to other.loop(EVLOOP_NONBLOCK), but in the most appropriate way for embedded\n\
-loops.");
+to Embed.other.loop(EVLOOP_NONBLOCK), but in the most appropriate way for\n\
+embedded loops.");
 
 static PyObject *
 Embed_sweep(Embed *self)
@@ -3533,10 +3952,29 @@ static PyMemberDef Embed_members[] = {
 };
 
 
+/* Embed.callback */
+PyDoc_STRVAR(Embed_callback_doc,
+"This watcher's callback. The callback is a callable whose signature must be:\n\
+callback(watcher, events).\n\
+The 'watcher' argument will be the python watcher object receiving the events.\n\
+The 'events' argument  will be a python int/long representing ored EV_* flags\n\
+corresponding to the received events.\n\
+As a rule you should not let the callback return with unhandled exceptions. The\n\
+loop 'does not know' what to do with an exception happening in your callback\n\
+(might change in future versions, if there is a general consensus), so it will\n\
+just print a warning and suppress it. If you want to act on an exception, do it\n\
+in the callback (where you are allowed to do anything needed, like logging,\n\
+stopping/restarting the loop, ...).\n\
+If the callback is None, then Embed.sweep() will be invoked automatically,\n\
+otherwise it is the responsibility of the callback to invoke it (it will\n\
+continue to be called until the sweep has been done, if you do not want that,\n\
+you need to temporarily stop the Embed watcher).");
+
+
 /* EmbedType.tp_getsets */
 static PyGetSetDef Embed_getsets[] = {
     {"callback", (getter)_Watcher_callback_get, (setter)_Watcher_callback_set,
-     _Watcher_callback_doc, (void *)1},
+     Embed_callback_doc, (void *)1},
     {NULL}  /* Sentinel */
 };
 
@@ -3590,17 +4028,22 @@ static PyTypeObject EmbedType = {
 
 /* ForkType.tp_doc */
 PyDoc_STRVAR(Fork_doc,
-"Fork(loop, callback, [data=None])\n\n\
-Fork watchers are called when a fork() was detected (usually because whoever is\n\
-a good citizen cared to tell libev about it by calling Loop.fork()).\n\
-The invocation is done before the event loop blocks next and before Prepare\n\
-watchers are being called, and only in the child after the fork. If whoever good\n\
-citizen calling Loop.fork() cheats and calls it in the wrong process, the fork\n\
-handlers will be invoked, too, of course.\n\
+"Fork(loop, callback, [data=None])\n\
+\n\
+Fork watchers are called when a fork () was detected (usually because whoever is\n\
+a good citizen cared to tell libev about it by calling Loop.fork()). The\n\
+invocation is done before the event loop blocks next and before Check watchers\n\
+are being called, and only in the child after the fork. If whoever good citizen\n\
+calling Loop.fork() cheats and calls it in the wrong process, the fork handlers\n\
+will be invoked, too, of course.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_fork - the audacity to resume the event loop after a fork' at libev\n\
+documentation for more information.");
 
 
 /* ForkType.tp_dealloc */
@@ -3734,10 +4177,11 @@ static PyTypeObject ForkType = {
 
 /* AsyncType.tp_doc */
 PyDoc_STRVAR(Async_doc,
-"Async(loop, callback, [data=None])\n\n\
-In general, you cannot use a single Loop from multiple threads or other\n\
-asynchronous sources such as signal handlers (as opposed to multiple event loops\n\
-- those are of course safe to use in different threads).\n\
+"Async(loop, callback, [data=None])\n\
+\n\
+In general, you cannot use a Loop from multiple threads or other asynchronous\n\
+sources such as signal handlers (as opposed to multiple event loops - those are\n\
+of course safe to use in different threads).\n\
 Sometimes, however, you need to wake up another event loop you do not control,\n\
 for example because it belongs to another thread. This is what Async watchers\n\
 do: as long as the Async watcher is active, you can signal it by calling\n\
@@ -3745,13 +4189,14 @@ Async.send(), which is thread- and signal safe.\n\
 This functionality is very similar to Signal watchers, as signals, too, are\n\
 asynchronous in nature, and signals, too, will be compressed (i.e. the number of\n\
 callback invocations may be less than the number of Async.send() calls).\n\
-Unlike Signal watchers, Async works with any event loop, not just the 'default\n\
-loop'.\n\
-See the ev_async section of libev documentation for a more detailed description.\n\
 'loop': a pyev.Loop object to which the watcher will be attached.\n\
 'callback': a callable that will be invoked when the event is triggered.\n\
-'data': any python object you might want to attach to the watcher\n\
-(defaults to None).");
+'data': any python object you might want to attach to the watcher (defaults to\n\
+None).\n\
+\n\
+See also:\n\
+'ev_async - how to wake up another event loop' at libev documentation for more\n\
+information.");
 
 
 /* AsyncType.tp_dealloc */
@@ -3802,6 +4247,8 @@ Async_init(Async *self, PyObject *args, PyObject *kwargs)
         return -1;
     }
 
+    ev_async_set(&self->async);
+
     return 0;
 }
 
@@ -3828,12 +4275,18 @@ Async_stop(Async *self)
 
 /* Async.send() */
 PyDoc_STRVAR(Async_send_doc,
-"send()\n\n\
-Sends/signals/activates the Async watcher, that is, feeds an EV_ASYNC event on\n\
-the watcher into the event loop. This call is safe to do from other threads,\n\
-signal or similar contexts.\n\
-This call incurs the overhead of a system call only once per loop iteration, so\n\
-while the overhead might be noticeable, it doesn't apply to repeated calls.");
+"send()\n\
+\n\
+Sends/signals/activates the given Async watcher, that is, feeds an EV_ASYNC\n\
+event on the watcher into the event loop. This call is safe to do from other\n\
+threads, signal or similar contexts.\n\
+This call incurs the overhead of a system call only once per event loop\n\
+iteration, so while the overhead might be noticeable, it doesn't apply to\n\
+repeated calls to Async.send() for the same event loop.\n\
+\n\
+Note:\n\
+As with other watchers in libev, multiple events might get compressed into a\n\
+single callback invocation.");
 
 static PyObject *
 Async_send(Async *self)
@@ -3859,7 +4312,11 @@ static PyMethodDef Async_methods[] = {
 /* Async.sent */
 PyDoc_STRVAR(Async_sent_doc,
 "True if send() has been called on the watcher but the event has not yet been\n\
-processed (or even noted) by the event loop, False otherwise.");
+processed (or even noted) by the event loop, False otherwise.\n\
+\n\
+Note:\n\
+This does not check whether the watcher itself is pending, only whether it has\n\
+been requested to make this watcher pending.");
 
 static PyObject *
 Async_sent_get(Async *self, void *closure)
@@ -3929,8 +4386,9 @@ static PyTypeObject AsyncType = {
 
 /* pyev_module.m_doc */
 PyDoc_STRVAR(pyev_doc,
-"Pyev is an extension wrapper around libev.\n\
-Libev is an event loop: you register interest in certain events (such as a file\n\
+"Python libev interface.\n\
+\n\
+libev is an event loop: you register interest in certain events (such as a file\n\
 descriptor being readable or a timeout occurring), and it will manage these\n\
 event sources and provide your program with events.\n\
 To do this, it must take more or less complete control over your process (or\n\
@@ -3939,39 +4397,44 @@ via a callback mechanism.\n\
 You register interest in certain events by registering so-called event watchers,\n\
 which you initialise with the details of the event, and then hand it over to\n\
 libev by starting the watcher.\n\
-Libev supports select, poll, the Linux-specific epoll, the BSD-specific kqueue\n\
+libev supports select, poll, the Linux-specific epoll, the BSD-specific kqueue\n\
 and the Solaris-specific event port mechanisms for file descriptor events (Io),\n\
-the Linux inotify interface (for Stat), relative timers (Timer), absolute timers\n\
-with customised rescheduling (Periodic), synchronous signals (Signal), process\n\
-status change events (Child), and event watchers dealing with the event loop\n\
-mechanism itself (Idle, Embed, Prepare and Check watchers) as well as file\n\
-watchers (Stat) and even limited support for fork events (Fork).\n\
-The library knows two types of loops, the 'default loop', which supports Signals\n\
-and Child events, and dynamically created loops which do not. The recommended\n\
-way to use libev with threads is indeed to create one loop per thread, and using\n\
-the 'default loop' in the 'main' or 'initial' thread.\n\
-Liveb is written and maintained by Marc Lehmann. The main documentation for\n\
-libev is at: http://pod.tst.eu/http://cvs.schmorp.de/libev/ev.pod");
+the Linux inotify interface (for Stat), Linux eventfd/signalfd (for faster and\n\
+cleaner inter-thread wakeup (Async)/signal handling (Signal)) relative timers\n\
+(Timer), absolute timers with customised rescheduling (Periodic), synchronous\n\
+signals (Signal), process status change events (Child), and event watchers\n\
+dealing with the event loop mechanism itself (Idle, Embed, Prepare and Check\n\
+watchers) as well as file watchers (Stat) and even limited support for fork\n\
+events (Fork).\n\
+Liveb is written and maintained by Marc Lehmann.\n\
+\n\
+See also:\n\
+libev documentation at http://pod.tst.eu/http://cvs.schmorp.de/libev/ev.pod");
 
 
 /* pyev.version() -> (str, str) */
 PyDoc_STRVAR(pyev_version_doc,
-"version() -> (str, str)\n\n\
+"version() -> (str, str)\n\
+\n\
 Returns a tuple of version strings.\n\
 The former is pyev version, while the latter is the underlying libev version.");
 
 static PyObject *
 pyev_version(PyObject *module)
 {
-    return Py_BuildValue("(UU)", PYEV_VERSION, LIBEV_VERSION);
+    return Py_BuildValue("(ss)", PYEV_VERSION, LIBEV_VERSION);
 }
 
 
 /* pyev.abi_version() -> (int, int) */
 PyDoc_STRVAR(pyev_abi_version_doc,
-"abi_version() -> (int, int)\n\n\
+"abi_version() -> (int, int)\n\
+\n\
 Returns a tuple of major, minor version numbers.\n\
-These numbers represent the libev ABI version that this module is running.");
+These numbers represent the libev ABI version that this module is running.\n\
+\n\
+Note:\n\
+This is not the same as libev version (although it might coincide).");
 
 static PyObject *
 pyev_abi_version(PyObject *module)
@@ -3982,10 +4445,13 @@ pyev_abi_version(PyObject *module)
 
 /* pyev.time() -> float */
 PyDoc_STRVAR(pyev_time_doc,
-"time() -> float\n\n\
+"time() -> float\n\
+\n\
 Returns the current time as libev would use it.\n\
-Please note that the Loop.now() method is usually faster and also often returns\n\
-the timestamp you actually want to know.");
+\n\
+Note:\n\
+The Loop.now() method is usually faster and also often returns the timestamp you\n\
+actually want to know.");
 
 static PyObject *
 pyev_time(PyObject *module)
@@ -3996,7 +4462,8 @@ pyev_time(PyObject *module)
 
 /* pyev.sleep(interval) */
 PyDoc_STRVAR(pyev_sleep_doc,
-"sleep(interval)\n\n\
+"sleep(interval)\n\
+\n\
 Sleep for the given interval (in seconds).\n\
 The current thread will be blocked until either it is interrupted or the given\n\
 time interval has passed.");
@@ -4020,12 +4487,17 @@ pyev_sleep(PyObject *module, PyObject *args)
 }
 
 
-/* pyev.supported_backends() -> int */
+/* pyev.supported_backends() -> int/long */
 PyDoc_STRVAR(pyev_supported_backends_doc,
-"supported_backends() -> int\n\n\
-Return the set of all backends (i.e. their corresponding EV_BACKEND_* value)\n\
+"supported_backends() -> int/long\n\
+\n\
+Returns the set of all backends (i.e. their corresponding EVBACKEND_* value)\n\
 compiled into this binary of libev (independent of their availability on the\n\
-system you are running on).");
+system you are running on).\n\
+\n\
+See also:\n\
+The documentation for ev_default_loop() in 'FUNCTIONS CONTROLLING THE EVENT\n\
+LOOP' at libev documentation for a description of the set values.");
 
 static PyObject *
 pyev_supported_backends(PyObject *module)
@@ -4034,15 +4506,19 @@ pyev_supported_backends(PyObject *module)
 }
 
 
-/* pyev.recommended_backends() -> int */
+/* pyev.recommended_backends() -> int/long */
 PyDoc_STRVAR(pyev_recommended_backends_doc,
-"recommended_backends() -> int\n\n\
-Return the set of all backends compiled into this binary of libev and also\n\
+"recommended_backends() -> int/long\n\
+\n\
+Returns the set of all backends compiled into this binary of libev and also\n\
 recommended for this platform. This set is often smaller than the one returned\n\
 by supported_backends(), as for example kqueue is broken on most BSDs and will\n\
-not be auto-detected unless you explicitly request it.\n\
-This is the set of backends that libev will probe for if you specify no backends\n\
-explicitly.");
+not be auto-detected unless you explicitly request it. This is the set of\n\
+backends that libev will probe for if you specify no backends explicitly.\n\
+\n\
+See also:\n\
+The documentation for ev_default_loop() in 'FUNCTIONS CONTROLLING THE EVENT\n\
+LOOP' at libev documentation for a description of the set values.");
 
 static PyObject *
 pyev_recommended_backends(PyObject *module)
@@ -4051,14 +4527,19 @@ pyev_recommended_backends(PyObject *module)
 }
 
 
-/* pyev.embeddable_backends() -> int */
+/* pyev.embeddable_backends() -> int/long */
 PyDoc_STRVAR(pyev_embeddable_backends_doc,
-"embeddable_backends() -> int\n\n\
-Returns the set of backends that are embeddable in other event loops.\n\
-This is the theoretical, all-platform, value. To find which backends might be\n\
-supported on the current system, you would need to look at\n\
+"embeddable_backends() -> int/long\n\
+\n\
+Returns the set of backends that are embeddable in other event loops. This is\n\
+the theoretical, all-platform, value. To find which backends might be supported\n\
+on the current system, you would need to look at\n\
 embeddable_backends() & supported_backends(), likewise for recommended ones.\n\
-See the description of Embed watchers for more info.");
+See the description of Embed watchers for more info.\n\
+\n\
+See also:\n\
+The documentation for ev_default_loop() in 'FUNCTIONS CONTROLLING THE EVENT\n\
+LOOP' at libev documentation for a description of the set values.");
 
 static PyObject *
 pyev_embeddable_backends(PyObject *module)
@@ -4067,32 +4548,47 @@ pyev_embeddable_backends(PyObject *module)
 }
 
 
-/* pyev.default_loop([flags]) -> Loop */
+/* pyev.default_loop([flags]) -> 'default loop' */
 PyDoc_STRVAR(pyev_default_loop_doc,
-"default_loop([flags]) -> Loop\n\n\
+"default_loop([flags, [pending_cb=None, [data=None]]]) -> 'default loop'\n\
+\n\
 This will initialise the 'default loop' if it hasn't been initialised yet and\n\
-return it. If it already was initialised, it simply returns it (and ignores the\n\
-'flags' argument).\n\
-The 'default loop' is the only loop that can handle Signal and Child watchers,\n\
-and to do this, it always registers a handler for SIGCHLD. If this is a problem\n\
-for your application you can either instanciate a Loop that doesn't do that, or\n\
-you can simply overwrite the SIGCHLD signal handler.\n\
+return it. If it already was initialised it simply returns it (and ignores the\n\
+arguments).\n\
+The 'default loop' is the only loop that can handle Child watchers, and to do\n\
+this, it always registers a handler for SIGCHLD. If this is a problem for your\n\
+application you can either instanciate a Loop that doesn't do that, or you can\n\
+simply overwrite the SIGCHLD signal handler.\n\
 If you don't know what loop to use, use the one returned from this function.\n\
 The 'flags' argument can be used to specify special behaviour or specific\n\
-backends to use, it defaults to EVFLAG_AUTO. See description for EVFLAG_* and\n\
-EVBACKEND_* in libev documentation for more information on flags.");
+backends to use, it defaults to EVFLAG_AUTO.\n\
+If 'pending_cb' is omitted or None the loop will fall back to its default\n\
+behavior of calling ev_invoke_pending() when required. If it is a callable, then\n\
+the loop will execute it instead and then it becomes the user's responsibility\n\
+to call Loop.pending_invoke() to invoke pending events.\n\
+The 'data' argument can be used to specify any python object you might want to\n\
+attach to the loop (defaults to None).\n\
+\n\
+See also:\n\
+The documentation for ev_default_loop() in 'FUNCTIONS CONTROLLING THE EVENT\n\
+LOOP' at libev documentation for more information about 'flags'.");
 
 static PyObject *
-pyev_default_loop(PyObject *module, PyObject *args)
+pyev_default_loop(PyObject *module, PyObject *args, PyObject *kwargs)
 {
     unsigned int flags = EVFLAG_AUTO;
+    PyObject *pending_cb = Py_None;
+    PyObject *data = NULL;
 
-    if (!PyArg_ParseTuple(args, "|I:default_loop", &flags)) {
+    static char *kwlist[] = {"flags", "pending_cb", "data", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|IOO:default_loop", kwlist,
+                                     &flags, &pending_cb, &data)) {
         return NULL;
     }
 
     if (!_DefaultLoop) {
-        _DefaultLoop = new_loop(&LoopType, flags, 1);
+        _DefaultLoop = new_loop(&LoopType, flags, 1, pending_cb, data);
         if (!_DefaultLoop) {
             return NULL;
         }
@@ -4100,7 +4596,7 @@ pyev_default_loop(PyObject *module, PyObject *args)
     else {
         if (PyErr_WarnEx(PyExc_UserWarning,
                          "returning the 'default_loop' created earlier, "
-                         "'flags' argument ignored (if provided).", 1)) {
+                         "arguments ignored (if provided).", 1)) {
             return NULL;
         }
         Py_INCREF(_DefaultLoop);
@@ -4127,11 +4623,12 @@ static PyMethodDef pyev_methods[] = {
     {"embeddable_backends", (PyCFunction)pyev_embeddable_backends,
      METH_NOARGS, pyev_embeddable_backends_doc},
     {"default_loop", (PyCFunction)pyev_default_loop,
-     METH_VARARGS, pyev_default_loop_doc},
+     METH_VARARGS | METH_KEYWORDS, pyev_default_loop_doc},
     {NULL} /* Sentinel */
 };
 
 
+#if PY_MAJOR_VERSION >= 3
 /* pyev_module */
 static PyModuleDef pyev_module = {
     PyModuleDef_HEAD_INIT,
@@ -4140,13 +4637,14 @@ static PyModuleDef pyev_module = {
     -1,                                       /*m_size*/
     pyev_methods,                             /*m_methods*/
 };
+#endif
 
 
 /* pyev_module initialization */
-PyMODINIT_FUNC
-PyInit_pyev(void)
+PyObject *
+init_pyev(void)
 {
-    PyObject *pyev, *version;
+    PyObject *pyev, *__version__;
 
     /* fill in deferred data addresses */
     _WatcherType.tp_new = PyType_GenericNew;
@@ -4185,27 +4683,38 @@ PyInit_pyev(void)
     }
 
     /* pyev.__version__ */
-    version = PyUnicode_FromFormat("%s-%s", PYEV_VERSION, LIBEV_VERSION);
-    if (!version) {
+#if PY_MAJOR_VERSION >= 3
+    __version__ = PyUnicode_FromFormat("%s-%s", PYEV_VERSION, LIBEV_VERSION);
+#else
+    __version__ = PyString_FromFormat("%s-%s", PYEV_VERSION, LIBEV_VERSION);
+#endif
+    if (!__version__) {
         return NULL;
     }
 
     /* pyev.Error object */
-    Pyev_Error = PyErr_NewException("pyev.Error", NULL, NULL);
-    if (!Pyev_Error) {
+    Error = PyErr_NewException("pyev.Error", NULL, NULL);
+    if (!Error) {
+        Py_DECREF(__version__);
         return NULL;
     }
 
     /* pyev */
+#if PY_MAJOR_VERSION >= 3
     pyev = PyModule_Create(&pyev_module);
+#else
+    pyev = Py_InitModule3("pyev", pyev_methods, pyev_doc);
+#endif
     if (!pyev) {
+        Py_DECREF(__version__);
+        Py_DECREF(Error);
         return NULL;
     }
 
     /* adding objects and constants */
     if (
-        PyModule_AddObject(pyev, "__version__", version) ||
-        PyModule_AddObject(pyev, "Error", Pyev_Error) ||
+        PyModule_AddObject(pyev, "__version__", __version__) ||
+        PyModule_AddObject(pyev, "Error", Error) ||
 
         /* types */
         PyModule_AddObject(pyev, "Loop", (PyObject *)&LoopType) ||
@@ -4222,10 +4731,12 @@ PyInit_pyev(void)
         PyModule_AddObject(pyev, "Fork", (PyObject *)&ForkType) ||
         PyModule_AddObject(pyev, "Async", (PyObject *)&AsyncType) ||
 
-        /* Loop() and default_loop() flags and backends */
+        /* Loop() and default_loop() flags */
         PyModule_AddUnsignedIntMacro(pyev, EVFLAG_AUTO) ||
         PyModule_AddUnsignedIntMacro(pyev, EVFLAG_NOENV) ||
         PyModule_AddUnsignedIntMacro(pyev, EVFLAG_FORKCHECK) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_NOINOTIFY) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_NOSIGFD) ||
         PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_SELECT) ||
         PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_POLL) ||
         PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_EPOLL) ||
@@ -4233,7 +4744,7 @@ PyInit_pyev(void)
         PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_DEVPOLL) ||
         PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_PORT) ||
 
-        /* Loop.loop() flags */
+        /* Loop.loop() flag */
         PyModule_AddIntMacro(pyev, EVLOOP_NONBLOCK) ||
         PyModule_AddIntMacro(pyev, EVLOOP_ONESHOT) ||
 
@@ -4248,7 +4759,9 @@ PyInit_pyev(void)
         /* events */
         PyModule_AddUnsignedIntMacro(pyev, EV_READ) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_WRITE) ||
+        PyModule_AddUnsignedIntMacro(pyev, EV_IO) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_TIMEOUT) ||
+        PyModule_AddUnsignedIntMacro(pyev, EV_TIMER) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_PERIODIC) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_SIGNAL) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_CHILD) ||
@@ -4259,10 +4772,11 @@ PyInit_pyev(void)
         PyModule_AddUnsignedIntMacro(pyev, EV_EMBED) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_FORK) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_ASYNC) ||
+        PyModule_AddUnsignedIntMacro(pyev, EV_CUSTOM) ||
         PyModule_AddUnsignedIntMacro(pyev, EV_ERROR)
        ) {
-        Py_DECREF(version);
-        Py_DECREF(Pyev_Error);
+        Py_DECREF(__version__);
+        Py_DECREF(Error);
         Py_DECREF(pyev);
         return NULL;
     }
@@ -4273,3 +4787,17 @@ PyInit_pyev(void)
 
     return pyev;
 }
+
+#if PY_MAJOR_VERSION >= 3
+PyMODINIT_FUNC
+PyInit_pyev(void)
+{
+    return init_pyev();
+}
+#else
+PyMODINIT_FUNC
+initpyev(void)
+{
+    init_pyev();
+}
+#endif

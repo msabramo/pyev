@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (c) 2009, Malek Hadj-Ali
+# Copyright (c) 2009, 2010 Malek Hadj-Ali
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -44,26 +44,26 @@
 
 
 from platform import python_version
-from os import name as platform_name
+from os import name as os_name
 from os.path import abspath, join
 from re import findall, search
-from sys import argv
 from subprocess import check_call
+from sys import argv
 from distutils.command.build_ext import build_ext as _build_ext
 from distutils.core import setup, Extension
 
 
-curr_ver = python_version()
-min_vers = {2: "2.6.2", 3: "3.1.1"}
-if curr_ver < min_vers[int(curr_ver[0])]:
+curr_py_ver = python_version()
+min_py_vers = {2: "2.6.4", 3: "3.1.1"}
+if curr_py_ver < min_py_vers[int(curr_py_ver[0])]:
     raise SystemExit("Aborted: pyev requires Python2 >= {0[2]} "
-                     "OR Python3 >= {0[3]}".format(min_vers))
+                     "OR Python3 >= {0[3]}".format(min_py_vers))
 
-if platform_name != "posix":
-    raise SystemExit("Aborted: platform '{0}' not supported".format(platform_name))
+if os_name != "posix":
+    raise SystemExit("Aborted: os '{0}' not supported".format(os_name))
 
 
-pyev_version = "0.5.3"
+pyev_version = "0.6.0"
 pyev_description = open(abspath("README.txt"), "r").read()
 libev_dir = abspath("src/libev")
 libev_configure_ac = open(join(libev_dir, "configure.ac"), "r").read()
@@ -98,8 +98,6 @@ setup(
                              "pyev",
                              ["src/pyev.c"],
                              define_macros=[
-                                            #("EV_MAXPRI", "5"),
-                                            #("EV_MINPRI", "-5"),
                                             ("PYEV_VERSION",
                                              "\"{0}\"".format(pyev_version)),
                                             ("LIBEV_VERSION",

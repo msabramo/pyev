@@ -94,7 +94,7 @@ port_poll (EV_P_ ev_tstamp timeout)
   if (res == -1)
     { 
       if (errno != EINTR && errno != ETIME)
-        ev_syserr ("(libev) port_getn");
+        ev_syserr ("(libev) port_getn (see http://bugs.opensolaris.org/view_bug.do?bug_id=6268715, try LIBEV_FLAGS=3 env variable)");
 
       return;
     } 
@@ -127,7 +127,7 @@ port_poll (EV_P_ ev_tstamp timeout)
 int inline_size
 port_init (EV_P_ int flags)
 {
-  /* Initalize the kernel queue */
+  /* Initialize the kernel queue */
   if ((backend_fd = port_create ()) < 0)
     return 0;
 
@@ -137,7 +137,7 @@ port_init (EV_P_ int flags)
   backend_modify = port_modify;
   backend_poll   = port_poll;
 
-  port_eventmax = 64; /* intiial number of events receivable per poll */
+  port_eventmax = 64; /* initial number of events receivable per poll */
   port_events = (port_event_t *)ev_malloc (sizeof (port_event_t) * port_eventmax);
 
   return EVBACKEND_PORT;

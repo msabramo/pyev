@@ -1,7 +1,7 @@
 /*
  * loop member variable declarations
  *
- * Copyright (c) 2007,2008,2009 Marc Alexander Lehmann <libev@schmorp.de>
+ * Copyright (c) 2007,2008,2009,2010 Marc Alexander Lehmann <libev@schmorp.de>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modifica-
@@ -173,7 +173,7 @@ VARx(ev_io, sigfd_w)
 VARx(sigset_t, sigfd_set)
 #endif
 
-#if EV_MINIMAL < 2 || EV_GENWRAP
+#if EV_FEATURE_API || EV_GENWRAP
 VARx(unsigned int, loop_count) /* total number of loop iterations/blocks */
 VARx(unsigned int, loop_depth) /* #ev_loop enters - #ev_loop leaves */
 

@@ -2,6 +2,11 @@
 * PrepareType
 *******************************************************************************/
 
+/* PrepareType.tp_doc */
+PyDoc_STRVAR(Prepare_tp_doc,
+"Prepare(loop, callback[, data=None, priority=0])");
+
+
 /* PrepareType.tp_new */
 static PyObject *
 Prepare_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
@@ -21,14 +26,16 @@ Prepare_tp_init(Prepare *self, PyObject *args, PyObject *kwargs)
 {
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
-    static char *kwlist[] = {"loop", "callback", "data", NULL};
+    static char *kwlist[] = {"loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|O:__init__", kwlist,
-            &LoopType, &loop, &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|Oi:__init__", kwlist,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0, callback, NULL, data)) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, NULL, data, priority)) {
         return -1;
     }
     return 0;

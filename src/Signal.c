@@ -6,18 +6,20 @@
 int
 set_Signal(Signal *self, int signum)
 {
-    struct ev_loop *loop = ((Watcher *)self)->loop->loop;
+    ev_loop *loop = ((Watcher *)self)->loop->loop;
 
     if (signum <= 0 || signum >= EV_NSIG) {
         PyErr_SetString(Error, "illegal signal number");
         return -1;
     }
+#if EV_MULTIPLICITY
     if (signals[signum - 1].loop && signals[signum - 1].loop != loop) {
         PyErr_SetString(Error, "the same signal must not be attached to two "
             "different loops");
         return -1;
     }
     signals[signum - 1].loop = loop;
+#endif
     ev_signal_set(&self->signal, signum);
     return 0;
 }
@@ -26,6 +28,11 @@ set_Signal(Signal *self, int signum)
 /*******************************************************************************
 * SignalType
 *******************************************************************************/
+
+/* SignalType.tp_doc */
+PyDoc_STRVAR(Signal_tp_doc,
+"Signal(signum, loop, callback[, data=None, priority=0])");
+
 
 /* SignalType.tp_new */
 static PyObject *
@@ -47,15 +54,18 @@ Signal_tp_init(Signal *self, PyObject *args, PyObject *kwargs)
     int signum;
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
     static char *kwlist[] = {"signum",
-                             "loop", "callback", "data", NULL};
+                             "loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO!O|O:__init__", kwlist,
-            &signum, &LoopType, &loop, &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO!O|Oi:__init__", kwlist,
+            &signum,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0, callback, NULL, data)) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, NULL, data, priority)) {
         return -1;
     }
     if (set_Signal(self, signum)) {
@@ -66,6 +76,9 @@ Signal_tp_init(Signal *self, PyObject *args, PyObject *kwargs)
 
 
 /* Signal.set(signum) */
+PyDoc_STRVAR(Signal_set_doc,
+"set(signum)");
+
 static PyObject *
 Signal_set(Signal *self, PyObject *args)
 {
@@ -86,15 +99,21 @@ Signal_set(Signal *self, PyObject *args)
 
 /* SignalType.tp_methods */
 static PyMethodDef Signal_tp_methods[] = {
-    {"set", (PyCFunction)Signal_set, METH_VARARGS, Signal_set_doc},
+    {"set", (PyCFunction)Signal_set,
+     METH_VARARGS, Signal_set_doc},
     {NULL}  /* Sentinel */
 };
 
 
+/* Signal.signum */
+PyDoc_STRVAR(Signal_signum_doc,
+"signum");
+
+
 /* SignalType.tp_members */
 static PyMemberDef Signal_tp_members[] = {
-    {"signum", T_INT, offsetof(Signal, signal.signum), READONLY,
-     Signal_signum_doc},
+    {"signum", T_INT, offsetof(Signal, signal.signum),
+     READONLY, Signal_signum_doc},
     {NULL}  /* Sentinel */
 };
 

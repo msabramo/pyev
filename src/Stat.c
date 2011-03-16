@@ -3,24 +3,24 @@
 *******************************************************************************/
 
 static PyStructSequence_Field Statdata_fields[] = {
-    {"dev",   Statdata_dev_doc},
-    {"rdev",  Statdata_rdev_doc},
-    {"ino",   Statdata_ino_doc},
-    {"size",  Statdata_size_doc},
-    {"nlink", Statdata_nlink_doc},
-    {"mode",  Statdata_mode_doc},
-    {"uid",   Statdata_uid_doc},
-    {"gid",   Statdata_gid_doc},
-    {"atime", Statdata_atime_doc},
-    {"mtime", Statdata_mtime_doc},
-    {"ctime", Statdata_ctime_doc},
+    {"dev",   "device"},
+    {"rdev",  "device type"},
+    {"ino",   "inode"},
+    {"size",  "total size, in bytes"},
+    {"nlink", "number of hard links"},
+    {"mode",  "protection bits"},
+    {"uid",   "user ID of owner"},
+    {"gid",   "group ID of owner"},
+    {"atime", "time of last access"},
+    {"mtime", "time of last modification"},
+    {"ctime", "time of last status change"},
     {NULL}  /* Sentinel */
 };
 
 
 static PyStructSequence_Desc Statdata_desc = {
     "pyev.Statdata",                          /*name*/
-    Statdata_doc,                             /*doc*/
+    "Statdata object",                        /*doc*/
     Statdata_fields,                          /*fields*/
     11,                                       /*n_in_sequence*/
 };
@@ -47,7 +47,7 @@ new_Statdata(ev_statdata *statdata)
         PyLong_FromUnsignedLong((unsigned long)statdata->st_dev));
     PyStructSequence_SET_ITEM(self, 1,
         PyLong_FromUnsignedLong((unsigned long)statdata->st_rdev));
-#endif /* HAVE_LONG_LONG */
+#endif
 
 #ifdef HAVE_LARGEFILE_SUPPORT
     PyStructSequence_SET_ITEM(self, 2,
@@ -59,7 +59,7 @@ new_Statdata(ev_statdata *statdata)
         PyLong_FromUnsignedLong((unsigned long)statdata->st_ino));
     PyStructSequence_SET_ITEM(self, 3,
         PyLong_FromLong((long)statdata->st_size));
-#endif /* HAVE_LARGEFILE_SUPPORT */
+#endif
 
     PyStructSequence_SET_ITEM(self, 4,
         PyInt_FromUnsignedLong((unsigned long)statdata->st_nlink));
@@ -84,7 +84,7 @@ new_Statdata(ev_statdata *statdata)
         PyLong_FromLong((long)statdata->st_mtime));
     PyStructSequence_SET_ITEM(self, 10,
         PyLong_FromLong((long)statdata->st_ctime));
-#endif /* SIZEOF_TIME_T > SIZEOF_LONG */
+#endif
 
     if (PyErr_Occurred()) {
         Py_DECREF(self);
@@ -98,20 +98,35 @@ new_Statdata(ev_statdata *statdata)
 * utilities
 *******************************************************************************/
 
-/* update Stat attr and prev member */
+/* update Stat current and previous member */
 int
 update_Stat(Stat *self)
 {
-    PyObject *attr, *tmp;
+    PyObject *current, *tmp;
 
-    attr = new_Statdata(&self->stat.attr);
-    if (!attr) {
+    current = new_Statdata(&self->stat.attr);
+    if (!current) {
         return -1;
     }
-    tmp = self->prev;
-    self->prev = self->attr;
-    self->attr = attr;
+    tmp = self->previous;
+    self->previous = self->current;
+    self->current = current;
     Py_XDECREF(tmp);
+    return 0;
+}
+
+
+/* set the Stat */
+int
+set_Stat(Stat *self, PyObject *pypath, double interval)
+{
+    const char *path;
+
+    path = PyString_AsPath(pypath);
+    if (!path) {
+        return -1;
+    }
+    ev_stat_set(&self->stat, path, interval);
     return 0;
 }
 
@@ -120,12 +135,17 @@ update_Stat(Stat *self)
 * StatType
 *******************************************************************************/
 
+/* StatType.tp_doc */
+PyDoc_STRVAR(Stat_tp_doc,
+"Stat(path, interval, loop, callback[, data=None, priority=0])");
+
+
 /* StatType.tp_dealloc */
 static void
 Stat_tp_dealloc(Stat *self)
 {
-    Py_XDECREF(self->prev);
-    Py_XDECREF(self->attr);
+    Py_XDECREF(self->previous);
+    Py_XDECREF(self->current);
     WatcherType.tp_dealloc((PyObject *)self);
 }
 
@@ -147,74 +167,58 @@ Stat_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 static int
 Stat_tp_init(Stat *self, PyObject *args, PyObject *kwargs)
 {
-    const char *path;
+    PyObject *path;
     double interval;
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
     static char *kwlist[] = {"path", "interval",
-                             "loop", "callback", "data", NULL};
+                             "loop", "callback", "data", "priority", NULL};
 
-#if PY_MAJOR_VERSION >= 3
-    PyObject *pypath = NULL;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O&dO!O|O:__init__", kwlist,
-            PyUnicode_FSConverter, &pypath, &interval, &LoopType, &loop,
-            &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OdO!O|Oi:__init__", kwlist,
+            &path, &interval,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    path = PyBytes_AS_STRING(pypath);
-    Py_DECREF(pypath); //XXX: this is strange: the rest should fail, but it doesn't!
-    if (!path) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, NULL, data, priority)) {
         return -1;
     }
-#else
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "sdO!O|O:__init__", kwlist,
-            &path, &interval, &LoopType, &loop, &callback, &data)) {
+    if (set_Stat(self, path, interval)) {
         return -1;
     }
-#endif /* PY_MAJOR_VERSION >= 3 */
-    if (init_Watcher((Watcher *)self, loop, 0, callback, NULL, data)) {
-        return -1;
-    }
-    ev_stat_set(&self->stat, path, interval);
     return 0;
 }
 
 
 /* Stat.set(path, interval) */
+PyDoc_STRVAR(Stat_set_doc,
+"set(path, interval)");
+
 static PyObject *
 Stat_set(Stat *self, PyObject *args)
 {
-    const char *path;
+    PyObject *path;
     double interval;
 
-#if PY_MAJOR_VERSION >= 3
-    PyObject *pypath = NULL;
-
-    if (!PyArg_ParseTuple(args, "O&d:set", PyUnicode_FSConverter, &pypath,
-            &interval)) {
+    if (!PyArg_ParseTuple(args, "Od:set", &path, &interval)) {
         return NULL;
     }
-    path = PyBytes_AS_STRING(pypath);
-    Py_DECREF(pypath); //XXX: this is strange: the rest should fail, but it doesn't!
-    if (!path) {
-        return NULL;
-    }
-#else
-    if (!PyArg_ParseTuple(args, "sd:set", &path, &interval)) {
-        return NULL;
-    }
-#endif /* PY_MAJOR_VERSION >= 3 */
     if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
-    ev_stat_set(&self->stat, path, interval);
+    if (set_Stat(self, path, interval)) {
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 
 
 /* Stat.stat() */
+PyDoc_STRVAR(Stat_stat_doc,
+"stat()");
+
 static PyObject *
 Stat_stat(Stat *self)
 {
@@ -224,7 +228,7 @@ Stat_stat(Stat *self)
     }
     if (self->stat.attr.st_nlink == 0) {
         return PyErr_SetFromErrnoWithFilename(PyExc_OSError,
-                    (char *)self->stat.path);
+                                              (char *)self->stat.path);
     }
     Py_RETURN_NONE;
 }
@@ -232,23 +236,45 @@ Stat_stat(Stat *self)
 
 /* StatType.tp_methods */
 static PyMethodDef Stat_tp_methods[] = {
-    {"set", (PyCFunction)Stat_set, METH_VARARGS, Stat_set_doc},
-    {"stat", (PyCFunction)Stat_stat, METH_NOARGS, Stat_stat_doc},
+    {"set", (PyCFunction)Stat_set,
+     METH_VARARGS, Stat_set_doc},
+    {"stat", (PyCFunction)Stat_stat,
+     METH_NOARGS, Stat_stat_doc},
     {NULL}  /* Sentinel */
 };
 
 
+/* Stat.current */
+PyDoc_STRVAR(Stat_current_doc,
+"current");
+
+
+/* Stat.previous */
+PyDoc_STRVAR(Stat_previous_doc,
+"previous");
+
+
+/* Stat.interval */
+PyDoc_STRVAR(Stat_interval_doc,
+"interval");
+
+
 /* StatType.tp_members */
 static PyMemberDef Stat_tp_members[] = {
-    {"interval", T_DOUBLE, offsetof(Stat, stat.interval), READONLY,
-     Stat_interval_doc},
-    {"attr", T_OBJECT, offsetof(Stat, attr), READONLY, Stat_attr_doc},
-    {"prev", T_OBJECT, offsetof(Stat, prev), READONLY, Stat_prev_doc},
+    {"current", T_OBJECT, offsetof(Stat, current),
+     READONLY, Stat_current_doc},
+    {"previous", T_OBJECT, offsetof(Stat, previous),
+     READONLY, Stat_previous_doc},
+    {"interval", T_DOUBLE, offsetof(Stat, stat.interval),
+     READONLY, Stat_interval_doc},
     {NULL}  /* Sentinel */
 };
 
 
 /* Stat.path */
+PyDoc_STRVAR(Stat_path_doc,
+"path");
+
 static PyObject *
 Stat_path_get(Stat *self, void *closure)
 {
@@ -258,7 +284,8 @@ Stat_path_get(Stat *self, void *closure)
 
 /* StatType.tp_getsets */
 static PyGetSetDef Stat_tp_getsets[] = {
-    {"path", (getter)Stat_path_get, NULL, Stat_path_doc, NULL},
+    {"path", (getter)Stat_path_get, NULL,
+     Stat_path_doc, NULL},
     {NULL}  /* Sentinel */
 };
 

@@ -1,6 +1,6 @@
-/*******************************************************************************
+﻿/*******************************************************************************
 *
-* Copyright (c) 2009, 2010 Malek Hadj-Ali
+* Copyright (c) 2009 - 2011 Malek Hadj-Ali
 * All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
@@ -42,27 +42,28 @@
 *
 *******************************************************************************/
 
+
 #ifndef _PYEV_H
 #define _PYEV_H
 
 
+/* Python */
 #define PY_SSIZE_T_CLEAN
 #include "Python.h"
 #include "structmember.h"
 #include "structseq.h"
 
-/* set EV_VERIFY */
-#ifndef EV_VERIFY
-#ifdef Py_DEBUG
-#define EV_VERIFY 3
-#else
-#define EV_VERIFY 0
-#endif /* Py_DEBUG */
-#endif /* !EV_VERIFY */
-
 /* pyev requirements */
+#undef EV_STANDALONE
+#undef EV_COMPAT3
+#undef EV_VERIFY
 #undef EV_FEATURES
 #undef EV_MULTIPLICITY
+#undef EV_PROTOTYPES
+#undef EV_COMMON
+#undef EV_CB_DECLARE
+#undef EV_CB_INVOKE
+
 #undef EV_PERIODIC_ENABLE
 #undef EV_SIGNAL_ENABLE
 #undef EV_CHILD_ENABLE
@@ -74,12 +75,44 @@
 #undef EV_FORK_ENABLE
 #undef EV_ASYNC_ENABLE
 
+#define EV_COMPAT3 0
+
+#ifdef Py_DEBUG
+#define EV_VERIFY 3
+#else
+#define EV_VERIFY 0
+#endif
+
+#ifdef MS_WINDOWS
+#undef EV_FD_TO_WIN32_HANDLE
+#undef EV_WIN32_HANDLE_TO_FD
+#undef EV_WIN32_CLOSE_FD
+#undef FD_SETSIZE
+#define FD_SETSIZE 2048
+#define PYEV_MAXSTDIO 2048
+#define EV_STANDALONE 1
+#endif
+
+/* embed libev */
 #include "libev/ev.c"
+
+
 
 
 /*******************************************************************************
 * objects
 *******************************************************************************/
+
+#ifdef MS_WINDOWS
+/* avoid including socketmodule.h (not available anyway) */
+typedef struct {
+    PyTypeObject *Sock_Type;
+    PyObject *error;
+} PySocketModule_APIObject;
+
+static PySocketModule_APIObject PySocketModule;
+#endif
+
 
 /* Error */
 static PyObject *Error;
@@ -88,14 +121,17 @@ static PyObject *Error;
 /* Loop */
 typedef struct {
     PyObject_HEAD
-    struct ev_loop *loop;
-    PyObject *pending_cb;
+    ev_loop *loop;
+    PyObject *callback;
     PyObject *data;
     char debug;
+    double io_interval;
+    double timeout_interval;
 } Loop;
+static PyTypeObject LoopType;
 
-/* the 'default_loop' */
-Loop *DefaultLoop = NULL;
+/* the 'default loop' */
+static Loop *DefaultLoop = NULL;
 
 
 /* Watcher - not exposed */
@@ -107,6 +143,7 @@ typedef struct {
     PyObject *callback;
     PyObject *data;
 } Watcher;
+static PyTypeObject WatcherType;
 
 
 /* Io */
@@ -125,68 +162,87 @@ typedef struct {
 static PyTypeObject TimerType;
 
 
+#if EV_PERIODIC_ENABLE
 /* Periodic */
 typedef struct {
     Watcher watcher;
     ev_periodic periodic;
-    PyObject *reschedule_cb;
+    PyObject *scheduler;
+    PyObject *err_type;
+    PyObject *err_value;
+    PyObject *err_traceback;
+    char err_fatal;
 } Periodic;
 static PyTypeObject PeriodicType;
+#endif
 
 
+#if EV_SIGNAL_ENABLE
 /* Signal */
 typedef struct {
     Watcher watcher;
     ev_signal signal;
 } Signal;
 static PyTypeObject SignalType;
+#endif
 
 
+#if EV_CHILD_ENABLE
 /* Child */
 typedef struct {
     Watcher watcher;
     ev_child child;
 } Child;
 static PyTypeObject ChildType;
+#endif
 
-
-/* Stat */
-static int initialized;
+#if EV_STAT_ENABLE
+/* Statdata */
+static int StatdataType_initialized = 0;
 static PyTypeObject StatdataType;
 
+/* Stat */
 typedef struct {
     Watcher watcher;
     ev_stat stat;
-    PyObject *attr;
-    PyObject *prev;
+    PyObject *current;
+    PyObject *previous;
 } Stat;
 static PyTypeObject StatType;
+#endif
 
 
+#if EV_IDLE_ENABLE
 /* Idle */
 typedef struct {
     Watcher watcher;
     ev_idle idle;
 } Idle;
 static PyTypeObject IdleType;
+#endif
 
 
+#if EV_PREPARE_ENABLE
 /* Prepare */
 typedef struct {
     Watcher watcher;
     ev_prepare prepare;
 } Prepare;
 static PyTypeObject PrepareType;
+#endif
 
 
+#if EV_CHECK_ENABLE
 /* Check */
 typedef struct {
     Watcher watcher;
     ev_check check;
 } Check;
 static PyTypeObject CheckType;
+#endif
 
 
+#if EV_EMBED_ENABLE
 /* Embed */
 typedef struct {
     Watcher watcher;
@@ -194,22 +250,27 @@ typedef struct {
     Loop *other;
 } Embed;
 static PyTypeObject EmbedType;
+#endif
 
 
+#if EV_FORK_ENABLE
 /* Fork */
 typedef struct {
     Watcher watcher;
     ev_fork fork;
 } Fork;
 static PyTypeObject ForkType;
+#endif
 
 
+#if EV_ASYNC_ENABLE
 /* Async */
 typedef struct {
     Watcher watcher;
     ev_async async;
 } Async;
 static PyTypeObject AsyncType;
+#endif
 
 
 /*******************************************************************************
@@ -219,10 +280,25 @@ static PyTypeObject AsyncType;
 #if PY_MAJOR_VERSION >= 3
 #define PyString_FromFormat PyUnicode_FromFormat
 #define PyString_FromString PyUnicode_FromString
+#define PyString_FromPath PyUnicode_DecodeFSDefault
+char *
+PyString_AsPath(PyObject *pypath)
+{
+    char *path;
+    PyObject *bytes;
+
+    if (!PyUnicode_FSConverter(pypath, &bytes)) {
+        return NULL;
+    }
+    path = PyBytes_AsString(bytes);
+    Py_DECREF(bytes);
+    return path;
+}
 #define PyInt_FromLong PyLong_FromLong
 #define PyInt_FromUnsignedLong PyLong_FromUnsignedLong
-#define PyString_FromPath PyUnicode_DecodeFSDefault
 #else
+#define PyString_FromPath PyString_FromString
+#define PyString_AsPath PyString_AsString
 PyObject *
 PyInt_FromUnsignedLong(unsigned long value)
 {
@@ -231,49 +307,7 @@ PyInt_FromUnsignedLong(unsigned long value)
     }
     return PyInt_FromLong((long)value);
 }
-#define PyString_FromPath PyString_FromString
-#endif /* PY_MAJOR_VERSION >= 3 */
-
-
-/* Py[Int/Long] -> int */
-int
-PyNum_AsInt(PyObject *pyvalue)
-{
-    long value;
-
-    value = PyLong_AsLong(pyvalue);
-    if (value == -1 && PyErr_Occurred()) {
-        return -1;
-    }
-    if (value < INT_MIN) {
-        PyErr_SetString(PyExc_OverflowError, "int is less than minimum");
-        return -1;
-    }
-    if (value > INT_MAX) {
-        PyErr_SetString(PyExc_OverflowError, "int is greater than maximum");
-        return -1;
-    }
-    return (int)value;
-}
-
-
-/* I need to investigate how the 100 opcodes rule works out exactly for the GIL.
-   Until then, better safe than sorry :). */
-#define PYEV_GIL_ENSURE \
-    { \
-        PyGILState_STATE gstate = PyGILState_Ensure(); \
-        PyObject *err_type, *err_value, *err_traceback; \
-        int had_error = PyErr_Occurred() ? 1 : 0; \
-        if (had_error) { \
-            PyErr_Fetch(&err_type, &err_value, &err_traceback); \
-        }
-
-#define PYEV_GIL_RELEASE \
-        if (had_error) { \
-            PyErr_Restore(err_type, err_value, err_traceback); \
-        } \
-        PyGILState_Release(gstate); \
-    }
+#endif
 
 
 /* check for a positive float */
@@ -288,4 +322,4 @@ positive_float(double value)
 }
 
 
-#endif /* _PYEV_H */
+#endif

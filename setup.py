@@ -1,6 +1,6 @@
-################################################################################
+﻿################################################################################
 #
-# Copyright (c) 2009, 2010 Malek Hadj-Ali
+# Copyright (c) 2009 - 2011 Malek Hadj-Ali
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -43,76 +43,126 @@
 ################################################################################
 
 
-from platform import python_version
-from os import name as os_name
-from os.path import abspath, join
-from re import findall, search
-from subprocess import check_call
-from sys import argv
-from distutils.command.build_ext import build_ext as _build_ext
+import platform, os, os.path, re, sys, subprocess
+from distutils.command.build_ext import build_ext
 from distutils.core import setup, Extension
 
 
-curr_py_ver = python_version()
-min_py_vers = {2: "2.6.4", 3: "3.1.1"}
+curr_py_ver = platform.python_version()
+min_py_vers = {
+               2: "2.6.6",
+               3: "3.1.2",
+              }
 if curr_py_ver < min_py_vers[int(curr_py_ver[0])]:
-    raise SystemExit("Aborted: pyev requires Python2 >= {0[2]} "
-                     "OR Python3 >= {0[3]}".format(min_py_vers))
-
-if os_name != "posix":
-    raise SystemExit("Aborted: os '{0}' not supported".format(os_name))
+    raise SystemExit("Aborted: pyev requires Python2 >= {0[2]} OR "
+                     "Python3 >= {0[3]}".format(min_py_vers))
 
 
-pyev_version = "0.6.0"
-pyev_description = open(abspath("README.txt"), "r").read()
-libev_dir = abspath("src/libev")
-libev_configure_ac = open(join(libev_dir, "configure.ac"), "r").read()
-libev_version = search("AM_INIT_AUTOMAKE\(libev,(\S+)\)",
-                       libev_configure_ac).group(1)
+pyev_version = "0.7.0"
+pyev_description = open(os.path.abspath("README.txt"), "r").read()
+libev_dir = os.path.abspath("src/libev")
+libev_configure_ac = open(os.path.join(libev_dir, "configure.ac"), "r").read()
+libev_version = re.search("AM_INIT_AUTOMAKE\(libev,(\S+)\)",
+                          libev_configure_ac).group(1)
 
 
-class build_ext(_build_ext):
+def get_posix_libs():
+    libev_config_h = os.path.join(libev_dir, "config.h")
+    subprocess.check_call(os.path.join(libev_dir, "configure"), cwd=libev_dir,
+                          shell=True)
+    libev_config = open(libev_config_h, "r").read()
+    return [l.lower() for l in set(re.findall("#define HAVE_LIB(\S+) 1",
+                                              libev_config))]
+
+
+pyev_platforms = {
+                  "nt": {
+                         "define_fmt": "\\\"{0}\\\"",
+                         "libraries": ["ws2_32"],
+                        },
+                  "posix": {
+                            "define_fmt": "\"{0}\"",
+                            "libraries": get_posix_libs,
+                            "extra_compile_args": ["-fno-strict-aliasing"],
+                           },
+                 }
+
+
+class pyev_build_ext(build_ext):
+
     def finalize_options(self):
-        _build_ext.finalize_options(self)
-        if "sdist" not in argv:
-            check_call(join(libev_dir, "configure"), cwd=libev_dir, shell=True)
-            libev_config = open(join(libev_dir, "config.h"), "r").read()
-            self.libraries = [l.lower() for l in
-                              set(findall("#define HAVE_LIB(\S+) 1",
-                                          libev_config))]
+        self.pyev_options = {}
+        build_ext.finalize_options(self)
+        if "sdist" not in sys.argv:
+            plat_name = os.name
+            if plat_name not in pyev_platforms:
+                raise SystemExit("Aborted: platform '{0}' "
+                                 "not supported".format(plat_name))
+            self.pyev_options.update(pyev_platforms[plat_name])
+            # libraries
+            libraries = self.pyev_options["libraries"]
+            if hasattr(libraries, "__call__"):
+                libraries = libraries()
+            if libraries:
+                if self.libraries:
+                    self.libraries.extend(libraries)
+                else:
+                    self.libraries = libraries
+            # define
+            define_fmt = self.pyev_options["define_fmt"]
+            define = [
+                      ("PYEV_VERSION", define_fmt.format(pyev_version)),
+                      ("LIBEV_VERSION", define_fmt.format(libev_version)),
+                     ]
+            if self.define:
+                self.define.extend(define)
+            else:
+                self.define = define
+
+    def build_extension(self, ext):
+        # extra_compile_args
+        if "extra_compile_args" in self.pyev_options:
+            extra_compile_args = self.pyev_options["extra_compile_args"]
+            if ext.extra_compile_args:
+                ext.extra_compile_args.extend(extra_compile_args)
+            else:
+                ext.extra_compile_args = extra_compile_args
+        build_ext.build_extension(self, ext)
 
 
 setup(
       name="pyev",
       version="-".join((pyev_version, libev_version)),
-      url="http://pyev.googlecode.com/",
+      url="http://packages.python.org/pyev/",
+      download_url="http://pypi.python.org/pypi/pyev/",
       description="Python libev interface.",
       long_description=pyev_description,
       author="Malek Hadj-Ali",
       author_email="lekmalek@gmail.com",
-      platforms=["POSIX"],
+      platforms=["Microsoft Windows", "POSIX"],
       license="BSD License / GNU General Public License (GPL)",
-      cmdclass={"build_ext": build_ext},
+      cmdclass={"build_ext": pyev_build_ext},
       ext_modules=[
-                   Extension(
-                             "pyev",
+                   Extension("pyev",
                              ["src/pyev.c"],
                              define_macros=[
-                                            ("PYEV_VERSION",
-                                             "\"{0}\"".format(pyev_version)),
-                                            ("LIBEV_VERSION",
-                                             "\"{0}\"".format(libev_version))
+                                            # uncomment the following
+                                            # to modify priorities
+                                            #("EV_MINPRI", "-5"),
+                                            #("EV_MAXPRI", "5"),
                                            ]
-                            )
+                            ),
                   ],
       classifiers=[
                    "Development Status :: 4 - Beta",
                    "Intended Audience :: Developers",
+                   "Intended Audience :: System Administrators",
                    "License :: OSI Approved :: BSD License",
                    "License :: OSI Approved :: GNU General Public License (GPL)",
+                   "Operating System :: Microsoft :: Windows :: Windows NT/2000",
                    "Operating System :: POSIX",
                    "Programming Language :: Python :: 2.6",
+                   "Programming Language :: Python :: 2.7",
                    "Programming Language :: Python :: 3.1",
-                   "Topic :: Software Development :: Libraries"
                   ]
      )

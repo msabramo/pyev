@@ -6,11 +6,26 @@
 int
 set_Io(Io *self, PyObject *fd, int events)
 {
-    /* fd --> fdnum */
-    int fdnum = PyObject_AsFileDescriptor(fd);
+    int fdnum;
+
+#ifdef MS_WINDOWS
+    if (!PyObject_TypeCheck(fd, PySocketModule.Sock_Type)) {
+        PyErr_SetString(PyExc_TypeError, "only socket objects are supported "
+            "in this configuration");
+        return -1;
+    }
+#endif
+    fdnum = PyObject_AsFileDescriptor(fd);
     if (fdnum == -1) {
         return -1;
     }
+#ifdef MS_WINDOWS
+    fdnum = EV_WIN32_HANDLE_TO_FD(fdnum);
+    if (fdnum == -1) {
+        PyErr_SetFromWindowsErr(0);
+        return -1;
+    }
+#endif
     if (events & ~(EV_READ | EV_WRITE)) {
         PyErr_SetString(Error, "illegal event mask");
         return -1;
@@ -23,6 +38,11 @@ set_Io(Io *self, PyObject *fd, int events)
 /*******************************************************************************
 * IoType
 *******************************************************************************/
+
+/* IoType.tp_doc */
+PyDoc_STRVAR(Io_tp_doc,
+"Io(fd, events, loop, callback[, data=None, priority=0])");
+
 
 /* IoType.tp_new */
 static PyObject *
@@ -45,15 +65,18 @@ Io_tp_init(Io *self, PyObject *args, PyObject *kwargs)
     int events;
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
     static char *kwlist[] = {"fd", "events",
-                             "loop", "callback", "data", NULL};
+                             "loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OiO!O|O:__init__", kwlist,
-            &fd, &events, &LoopType, &loop, &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OiO!O|Oi:__init__", kwlist,
+            &fd, &events,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0, callback, NULL, data)) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, NULL, data, priority)) {
         return -1;
     }
     if (set_Io(self, fd, events)) {
@@ -64,6 +87,9 @@ Io_tp_init(Io *self, PyObject *args, PyObject *kwargs)
 
 
 /* Io.set(fd, events) */
+PyDoc_STRVAR(Io_set_doc,
+"set(fd, events)");
+
 static PyObject *
 Io_set(Io *self, PyObject *args)
 {
@@ -85,15 +111,28 @@ Io_set(Io *self, PyObject *args)
 
 /* IoType.tp_methods */
 static PyMethodDef Io_tp_methods[] = {
-    {"set", (PyCFunction)Io_set, METH_VARARGS, Io_set_doc},
+    {"set", (PyCFunction)Io_set,
+     METH_VARARGS, Io_set_doc},
     {NULL}  /* Sentinel */
 };
 
 
+/* Io.fd */
+PyDoc_STRVAR(Io_fd_doc,
+"fd");
+
+
+/* Io.events */
+PyDoc_STRVAR(Io_events_doc,
+"events");
+
+
 /* IoType.tp_members */
 static PyMemberDef Io_tp_members[] = {
-    {"fd", T_INT, offsetof(Io, io.fd), READONLY, Io_fd_doc},
-    {"events", T_INT, offsetof(Io, io.events), READONLY, Io_events_doc},
+    {"fd", T_INT, offsetof(Io, io.fd),
+     READONLY, Io_fd_doc},
+    {"events", T_INT, offsetof(Io, io.events),
+     READONLY, Io_events_doc},
     {NULL}  /* Sentinel */
 };
 

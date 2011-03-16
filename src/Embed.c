@@ -25,6 +25,11 @@ set_Embed(Embed *self, Loop *other)
 * EmbedType
 *******************************************************************************/
 
+/* EmbedType.tp_doc */
+PyDoc_STRVAR(Embed_tp_doc,
+"Embed(other, loop[, callback=None, data=None, priority=0])");
+
+
 /* EmbedType.tp_traverse */
 static int
 Embed_tp_traverse(Embed *self, visitproc visit, void *arg)
@@ -71,15 +76,18 @@ Embed_tp_init(Embed *self, PyObject *args, PyObject *kwargs)
 {
     Loop *other, *loop;
     PyObject *callback = Py_None, *data = NULL;
+    int priority = 0;
 
     static char *kwlist[] = {"other",
-                             "loop", "callback", "data", NULL};
+                             "loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!|OO:__init__", kwlist,
-            &LoopType, &other, &LoopType, &loop, &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!|OOi:__init__", kwlist,
+            &LoopType, &other,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0, callback, (void *)1, data)) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, (void *)1, data, priority)) {
         return -1;
     }
     if (set_Embed(self, other)) {
@@ -90,6 +98,9 @@ Embed_tp_init(Embed *self, PyObject *args, PyObject *kwargs)
 
 
 /* Embed.set(other) */
+PyDoc_STRVAR(Embed_set_doc,
+"set(other)");
+
 static PyObject *
 Embed_set(Embed *self, PyObject *args)
 {
@@ -109,6 +120,9 @@ Embed_set(Embed *self, PyObject *args)
 
 
 /* Embed.sweep() */
+PyDoc_STRVAR(Embed_sweep_doc,
+"sweep()");
+
 static PyObject *
 Embed_sweep(Embed *self)
 {
@@ -119,17 +133,30 @@ Embed_sweep(Embed *self)
 
 /* EmbedType.tp_methods */
 static PyMethodDef Embed_tp_methods[] = {
-    {"set", (PyCFunction)Embed_set, METH_VARARGS, Embed_set_doc},
-    {"sweep", (PyCFunction)Embed_sweep, METH_NOARGS, Embed_sweep_doc},
+    {"set", (PyCFunction)Embed_set,
+     METH_VARARGS, Embed_set_doc},
+    {"sweep", (PyCFunction)Embed_sweep,
+     METH_NOARGS, Embed_sweep_doc},
     {NULL}  /* Sentinel */
 };
+
+
+/* Embed.other */
+PyDoc_STRVAR(Embed_other_doc,
+"other");
 
 
 /* EmbedType.tp_members */
 static PyMemberDef Embed_tp_members[] = {
-    {"other", T_OBJECT_EX, offsetof(Embed, other), READONLY, Embed_other_doc},
+    {"other", T_OBJECT_EX, offsetof(Embed, other),
+     READONLY, Embed_other_doc},
     {NULL}  /* Sentinel */
 };
+
+
+/* Embed.callback */
+PyDoc_STRVAR(Embed_callback_doc,
+"callback");
 
 
 /* EmbedType.tp_getsets */

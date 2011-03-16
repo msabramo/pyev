@@ -2,40 +2,52 @@
 * utilities
 *******************************************************************************/
 
+#define PYEV_MININTERVAL (double)1/8192
+
+
 /* fwd decl */
 static int
-Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure);
+Periodic_scheduler_set(Periodic *self, PyObject *value, void *closure);
 
 
-/* Periodic reschedule stop callback */
+/* Periodic scheduler stop callback */
 static void
-stop_reschedule_Periodic(struct ev_loop *loop, ev_prepare *prepare, int revents)
+stop_scheduler_Periodic(ev_loop *loop, ev_prepare *prepare, int revents)
 {
-    PYEV_GIL_ENSURE
-    ev_periodic_stop(loop, (ev_periodic *)prepare->data);
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    Periodic *pyperiodic = prepare->data;
+    ev_periodic_stop(loop, &pyperiodic->periodic);
     ev_prepare_stop(loop, prepare);
+    PyErr_Restore(pyperiodic->err_type, pyperiodic->err_value,
+                  pyperiodic->err_traceback);
+    if (pyperiodic->err_fatal) {
+        exit_Loop(loop);
+    }
+    else {
+        report_error_Loop(ev_userdata(loop), pyperiodic->scheduler);
+    }
     PyMem_Free((void *)prepare);
-    PYEV_GIL_RELEASE
+    PyGILState_Release(gstate);
 }
 
 
-/* Periodic reschedule callback */
+/* Periodic scheduler callback */
 static double
-reschedule_Periodic(ev_periodic *periodic, double now)
+scheduler_Periodic(ev_periodic *periodic, double now)
 {
+    PyGILState_STATE gstate = PyGILState_Ensure();
     double result;
-    PYEV_GIL_ENSURE
     Periodic *pyperiodic = periodic->data;
-    Loop *loop = ((Watcher *)pyperiodic)->loop;
     PyObject *pynow, *pyresult = NULL;
     ev_prepare *prepare;
 
     pynow = PyFloat_FromDouble(now);
     if (!pynow) {
+        pyperiodic->err_fatal = 1;
         goto error;
     }
-    pyresult = PyObject_CallFunctionObjArgs(pyperiodic->reschedule_cb,
-                    pyperiodic, pynow, NULL);
+    pyresult = PyObject_CallFunctionObjArgs(pyperiodic->scheduler, pyperiodic,
+                                            pynow, NULL);
     if (!pyresult) {
         goto error;
     }
@@ -50,25 +62,21 @@ reschedule_Periodic(ev_periodic *periodic, double now)
     goto finish;
 
 error:
-    report_error_Loop(loop, pyperiodic->reschedule_cb);
-    /* warn the user we're going to stop this Periodic */
-    PyErr_Format(Error, "due to previous error, <pyev.Periodic object at %p> "
-        "will be stopped", pyperiodic);
-    report_error_Loop(loop, pyperiodic->reschedule_cb);
-    /* start an ev_prepare watcher that will stop this periodic */
     prepare = (ev_prepare *)PyMem_Malloc(sizeof(ev_prepare));
     if (!prepare) {
-        Py_FatalError("Memory could not be allocated."); //XXX: hmm, not sure...
+        Py_FatalError("failed to allocate memory.");
     }
-    prepare->data = (void *)periodic;
-    ev_prepare_init(prepare, stop_reschedule_Periodic);
-    ev_prepare_start(loop->loop, prepare);
+    PyErr_Fetch(&pyperiodic->err_type, &pyperiodic->err_value,
+                &pyperiodic->err_traceback);
+    prepare->data = (void *)pyperiodic;
+    ev_prepare_init(prepare, stop_scheduler_Periodic);
+    ev_prepare_start(((Watcher *)pyperiodic)->loop->loop, prepare);
     result = now + 1e30;
 
 finish:
     Py_XDECREF(pyresult);
     Py_XDECREF(pynow);
-    PYEV_GIL_RELEASE
+    PyGILState_Release(gstate);
     return result;
 }
 
@@ -76,17 +84,26 @@ finish:
 /* set the Periodic */
 int
 set_Periodic(Periodic *self, double offset, double interval,
-             PyObject *reschedule_cb)
+             PyObject *scheduler)
 {
     if (!positive_float(interval)) {
         return -1;
     }
-    /* self->reschedule_cb */
-    if (Periodic_reschedule_cb_set(self, reschedule_cb, (void *)1)) {
+    if (interval > 0.0) {
+        if (interval < PYEV_MININTERVAL) {
+            PyErr_SetString(PyExc_ValueError, "'interval' too small");
+            return -1;
+        }
+        if (!positive_float(offset)) {
+            return -1;
+        }
+    }
+    /* self->scheduler */
+    if (Periodic_scheduler_set(self, scheduler, (void *)1)) {
         return -1;
     }
-    if (reschedule_cb != Py_None) {
-        ev_periodic_set(&self->periodic, offset, interval, reschedule_Periodic);
+    if (scheduler != Py_None) {
+        ev_periodic_set(&self->periodic, offset, interval, scheduler_Periodic);
     }
     else{
         ev_periodic_set(&self->periodic, offset, interval, 0);
@@ -99,11 +116,19 @@ set_Periodic(Periodic *self, double offset, double interval,
 * PeriodicType
 *******************************************************************************/
 
+/* PeriodicType.tp_doc */
+PyDoc_STRVAR(Periodic_tp_doc,
+"Periodic(offset, interval, scheduler, loop, callback[, data=None, priority=0])");
+
+
 /* PeriodicType.tp_traverse */
 static int
 Periodic_tp_traverse(Periodic *self, visitproc visit, void *arg)
 {
-    Py_VISIT(self->reschedule_cb);
+    Py_VISIT(self->err_traceback);
+    Py_VISIT(self->err_value);
+    Py_VISIT(self->err_type);
+    Py_VISIT(self->scheduler);
     return 0;
 }
 
@@ -112,7 +137,10 @@ Periodic_tp_traverse(Periodic *self, visitproc visit, void *arg)
 static int
 Periodic_tp_clear(Periodic *self)
 {
-    Py_CLEAR(self->reschedule_cb);
+    Py_CLEAR(self->err_traceback);
+    Py_CLEAR(self->err_value);
+    Py_CLEAR(self->err_type);
+    Py_CLEAR(self->scheduler);
     return 0;
 }
 
@@ -144,50 +172,57 @@ static int
 Periodic_tp_init(Periodic *self, PyObject *args, PyObject *kwargs)
 {
     double offset, interval;
-    PyObject *reschedule_cb;
+    PyObject *scheduler;
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
-    static char *kwlist[] = {"offset", "interval", "reschedule_cb",
-                             "loop", "callback", "data", NULL};
+    static char *kwlist[] = {"offset", "interval", "scheduler",
+                             "loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ddOO!O|O:__init__", kwlist,
-            &offset, &interval, &reschedule_cb, &LoopType, &loop, &callback,
-            &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ddOO!O|Oi:__init__", kwlist,
+            &offset, &interval, &scheduler,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0, callback, NULL, data)) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, NULL, data, priority)) {
         return -1;
     }
-    if (set_Periodic(self, offset, interval, reschedule_cb)) {
+    if (set_Periodic(self, offset, interval, scheduler)) {
         return -1;
     }
     return 0;
 }
 
 
-/* Periodic.set(offset, interval, reschedule_cb) */
+/* Periodic.set(offset, interval, scheduler) */
+PyDoc_STRVAR(Periodic_set_doc,
+"set(offset, interval, scheduler)");
+
 static PyObject *
 Periodic_set(Periodic *self, PyObject *args)
 {
     double offset, interval;
-    PyObject *reschedule_cb;
+    PyObject *scheduler;
 
-    if (!PyArg_ParseTuple(args, "ddO:set", &offset, &interval, &reschedule_cb)) {
+    if (!PyArg_ParseTuple(args, "ddO:set", &offset, &interval, &scheduler)) {
         return NULL;
     }
     if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
-    if (set_Periodic(self, offset, interval, reschedule_cb)) {
+    if (set_Periodic(self, offset, interval, scheduler)) {
         return NULL;
     }
     Py_RETURN_NONE;
 }
 
 
-//XXX: reset?
 /* Periodic.reset() */
+PyDoc_STRVAR(Periodic_reset_doc,
+"reset()");
+
 static PyObject *
 Periodic_reset(Periodic *self)
 {
@@ -196,7 +231,10 @@ Periodic_reset(Periodic *self)
 }
 
 
-/* Periodic.at() */
+/* Periodic.at() -> float */
+PyDoc_STRVAR(Periodic_at_doc,
+"at() -> float");
+
 static PyObject *
 Periodic_at(Periodic *self)
 {
@@ -206,22 +244,33 @@ Periodic_at(Periodic *self)
 
 /* PeriodicType.tp_methods */
 static PyMethodDef Periodic_tp_methods[] = {
-    {"set", (PyCFunction)Periodic_set, METH_VARARGS, Periodic_set_doc},
-    {"reset", (PyCFunction)Periodic_reset, METH_NOARGS, Periodic_reset_doc},
-    {"at", (PyCFunction)Periodic_at, METH_NOARGS, Periodic_at_doc},
+    {"set", (PyCFunction)Periodic_set,
+     METH_VARARGS, Periodic_set_doc},
+    {"reset", (PyCFunction)Periodic_reset,
+     METH_NOARGS, Periodic_reset_doc},
+    {"at", (PyCFunction)Periodic_at,
+     METH_NOARGS, Periodic_at_doc},
     {NULL}  /* Sentinel */
 };
 
 
+/* Periodic.offset */
+PyDoc_STRVAR(Periodic_offset_doc,
+"offset");
+
+
 /* PeriodicType.tp_members */
 static PyMemberDef Periodic_tp_members[] = {
-    {"offset", T_DOUBLE, offsetof(Periodic, periodic.offset), 0,
-     Periodic_offset_doc},
+    {"offset", T_DOUBLE, offsetof(Periodic, periodic.offset),
+     0, Periodic_offset_doc},
     {NULL}  /* Sentinel */
 };
 
 
 /* Periodic.interval */
+PyDoc_STRVAR(Periodic_interval_doc,
+"interval");
+
 static PyObject *
 Periodic_interval_get(Periodic *self, void *closure)
 {
@@ -249,16 +298,19 @@ Periodic_interval_set(Periodic *self, PyObject *value, void *closure)
 }
 
 
-/* Periodic.reschedule_cb */
+/* Periodic.scheduler */
+PyDoc_STRVAR(Periodic_scheduler_doc,
+"scheduler");
+
 static PyObject *
-Periodic_reschedule_cb_get(Periodic *self, void *closure)
+Periodic_scheduler_get(Periodic *self, void *closure)
 {
-    Py_INCREF(self->reschedule_cb);
-    return self->reschedule_cb;
+    Py_INCREF(self->scheduler);
+    return self->scheduler;
 }
 
 static int
-Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure)
+Periodic_scheduler_set(Periodic *self, PyObject *value, void *closure)
 {
     PyObject *tmp;
 
@@ -272,15 +324,15 @@ Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure)
     }
     if (!closure) {
         if (value != Py_None) {
-            self->periodic.reschedule_cb = reschedule_Periodic;
+            self->periodic.reschedule_cb = scheduler_Periodic;
         }
         else {
             self->periodic.reschedule_cb = 0;
         }
     }
-    tmp = self->reschedule_cb;
+    tmp = self->scheduler;
     Py_INCREF(value);
-    self->reschedule_cb = value;
+    self->scheduler = value;
     Py_XDECREF(tmp);
     return 0;
 }
@@ -288,10 +340,10 @@ Periodic_reschedule_cb_set(Periodic *self, PyObject *value, void *closure)
 
 /* PeriodicType.tp_getsets */
 static PyGetSetDef Periodic_tp_getsets[] = {
-    {"reschedule_cb", (getter)Periodic_reschedule_cb_get,
-     (setter)Periodic_reschedule_cb_set, Periodic_reschedule_cb_doc, NULL},
     {"interval", (getter)Periodic_interval_get, (setter)Periodic_interval_set,
      Periodic_interval_doc, NULL},
+    {"scheduler", (getter)Periodic_scheduler_get, (setter)Periodic_scheduler_set,
+     Periodic_scheduler_doc, NULL},
     {NULL}  /* Sentinel */
 };
 

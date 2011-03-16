@@ -2,6 +2,11 @@
 * AsyncType
 *******************************************************************************/
 
+/* AsyncType.tp_doc */
+PyDoc_STRVAR(Async_tp_doc,
+"Async(loop, callback[, data=None, priority=0])");
+
+
 /* AsyncType.tp_new */
 static PyObject *
 Async_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
@@ -21,22 +26,26 @@ Async_tp_init(Async *self, PyObject *args, PyObject *kwargs)
 {
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
-    static char *kwlist[] = {"loop", "callback", "data", NULL};
+    static char *kwlist[] = {"loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|O:__init__", kwlist,
-            &LoopType, &loop, &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|Oi:__init__", kwlist,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0, callback, NULL, data)) {
+    if (init_Watcher((Watcher *)self, loop, 0,
+                     callback, NULL, data, priority)) {
         return -1;
     }
-    ev_async_set(&self->async);
     return 0;
 }
 
 
 /* Async.send() */
+PyDoc_STRVAR(Async_send_doc,
+"send()");
+
 static PyObject *
 Async_send(Async *self)
 {
@@ -47,12 +56,16 @@ Async_send(Async *self)
 
 /* AsyncType.tp_methods */
 static PyMethodDef Async_tp_methods[] = {
-    {"send", (PyCFunction)Async_send, METH_NOARGS, Async_send_doc},
+    {"send", (PyCFunction)Async_send,
+     METH_NOARGS, Async_send_doc},
     {NULL}  /* Sentinel */
 };
 
 
 /* Async.sent */
+PyDoc_STRVAR(Async_sent_doc,
+"sent");
+
 static PyObject *
 Async_sent_get(Async *self, void *closure)
 {
@@ -65,7 +78,8 @@ Async_sent_get(Async *self, void *closure)
 
 /* AsyncType.tp_getsets */
 static PyGetSetDef Async_tp_getsets[] = {
-    {"sent", (getter)Async_sent_get, NULL, Async_sent_doc, NULL},
+    {"sent", (getter)Async_sent_get, NULL,
+     Async_sent_doc, NULL},
     {NULL}  /* Sentinel */
 };
 

@@ -1,6 +1,24 @@
 /*******************************************************************************
+* utilities
+*******************************************************************************/
+
+/* set the Child */
+int
+set_Child(Child *self, int pid, PyObject *trace)
+{
+    ev_child_set(&self->child, pid, (trace == Py_True) ? 1 : 0);
+    return 0;
+}
+
+
+/*******************************************************************************
 * ChildType
 *******************************************************************************/
+
+/* ChildType.tp_doc */
+PyDoc_STRVAR(Child_tp_doc,
+"Child(pid, trace, loop, callback[, data=None, priority=0])");
+
 
 /* ChildType.tp_new */
 static PyObject *
@@ -23,23 +41,29 @@ Child_tp_init(Child *self, PyObject *args, PyObject *kwargs)
     PyObject *trace;
     Loop *loop;
     PyObject *callback, *data = NULL;
+    int priority = 0;
 
     static char *kwlist[] = {"pid", "trace",
-                             "loop", "callback", "data", NULL};
+                             "loop", "callback", "data", "priority", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO!O!O|O:__init__", kwlist,
-            &pid, &PyBool_Type, &trace, &LoopType, &loop, &callback, &data)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO!O!O|Oi:__init__", kwlist,
+            &pid, &PyBool_Type, &trace,
+            &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 1, callback, NULL, data)) {
+    if (init_Watcher((Watcher *)self, loop, 1,
+                     callback, NULL, data, priority)) {
         return -1;
     }
-    ev_child_set(&self->child, pid, (trace == Py_True) ? 1 : 0);
+    set_Child(self, pid, trace);
     return 0;
 }
 
 
 /* Child.set(pid, trace) */
+PyDoc_STRVAR(Child_set_doc,
+"set(pid, trace)");
+
 static PyObject *
 Child_set(Child *self, PyObject *args)
 {
@@ -52,23 +76,42 @@ Child_set(Child *self, PyObject *args)
     if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
-    ev_child_set(&self->child, pid, (trace == Py_True) ? 1 : 0);
+    set_Child(self, pid, trace);
     Py_RETURN_NONE;
 }
 
 
 /* ChildType.tp_methods */
 static PyMethodDef Child_tp_methods[] = {
-    {"set", (PyCFunction)Child_set, METH_VARARGS, Child_set_doc},
+    {"set", (PyCFunction)Child_set,
+     METH_VARARGS, Child_set_doc},
     {NULL}  /* Sentinel */
 };
 
 
+/* Child.pid */
+PyDoc_STRVAR(Child_pid_doc,
+"pid");
+
+
+/* Child.rpid */
+PyDoc_STRVAR(Child_rpid_doc,
+"rpid");
+
+
+/* Child.rstatus */
+PyDoc_STRVAR(Child_rstatus_doc,
+"rstatus");
+
+
 /* ChildType.tp_members */
 static PyMemberDef Child_tp_members[] = {
-    {"pid", T_INT, offsetof(Child, child.pid), READONLY, Child_pid_doc},
-    {"rpid", T_INT, offsetof(Child, child.rpid), 0, Child_rpid_doc},
-    {"rstatus", T_INT, offsetof(Child, child.rstatus), 0, Child_rstatus_doc},
+    {"pid", T_INT, offsetof(Child, child.pid),
+     READONLY, Child_pid_doc},
+    {"rpid", T_INT, offsetof(Child, child.rpid),
+     0, Child_rpid_doc},
+    {"rstatus", T_INT, offsetof(Child, child.rstatus),
+     0, Child_rstatus_doc},
     {NULL}  /* Sentinel */
 };
 

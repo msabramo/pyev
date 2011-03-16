@@ -1,6 +1,6 @@
-/*******************************************************************************
+﻿/*******************************************************************************
 *
-* Copyright (c) 2009, 2010 Malek Hadj-Ali
+* Copyright (c) 2009 - 2011 Malek Hadj-Ali
 * All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
@@ -42,8 +42,8 @@
 *
 *******************************************************************************/
 
+
 #include "pyev.h"
-#include "pyevdoc.h" //documentation
 
 
 /*******************************************************************************
@@ -54,52 +54,56 @@
 #include "Watcher.c"
 #include "Io.c"
 #include "Timer.c"
+#if EV_PERIODIC_ENABLE
 #include "Periodic.c"
+#endif
+#if EV_SIGNAL_ENABLE
 #include "Signal.c"
+#endif
+#if EV_CHILD_ENABLE
 #include "Child.c"
+#endif
+#if EV_STAT_ENABLE
 #include "Stat.c"
+#endif
+#if EV_IDLE_ENABLE
 #include "Idle.c"
+#endif
+#if EV_PREPARE_ENABLE
 #include "Prepare.c"
+#endif
+#if EV_CHECK_ENABLE
 #include "Check.c"
+#endif
+#if EV_EMBED_ENABLE
 #include "Embed.c"
+#endif
+#if EV_FORK_ENABLE
 #include "Fork.c"
+#endif
+#if EV_ASYNC_ENABLE
 #include "Async.c"
+#endif
 
 
 /*******************************************************************************
 * utilities
 *******************************************************************************/
 
-/* Create and document an exception */
-PyObject *
-PyErr_Create(char *name, const char *doc, PyObject *base)
-{
-    PyObject *dict = NULL;
-    PyObject *_doc, *err;
-
-    if (doc) {
-        dict = PyDict_New();
-        if (!dict) {
-            return NULL;
-        }
-        _doc = PyString_FromString(doc);
-        if (!_doc || PyDict_SetItemString(dict, "__doc__", _doc)) {
-            Py_XDECREF(_doc);
-            Py_DECREF(dict);
-            return NULL;
-        }
-        Py_DECREF(_doc);
-    }
-    err = PyErr_NewException(name, base, dict);
-    Py_XDECREF(dict);
-    return err;
-}
+#undef PyModule_AddIntMacro
+#define PyModule_AddIntMacro(m, c) \
+    PyModule_AddIntConstant(m, #c, (int)c)
+#define PyModule_AddUnsignedIntMacro(m, c) \
+    PyModule_AddIntConstant(m, #c, (unsigned int)c)
 
 
 /* Add a type to a module */
 int
 PyModule_AddType(PyObject *module, const char *name, PyTypeObject *type)
 {
+    if (PyType_Ready(type)) {
+        return -1;
+    }
     Py_INCREF(type);
     if (PyModule_AddObject(module, name, (PyObject *)type)) {
         Py_DECREF(type);
@@ -109,20 +113,12 @@ PyModule_AddType(PyObject *module, const char *name, PyTypeObject *type)
 }
 
 
-/* Add an unsigned integer constant to a module */
+/* Add a watcher to a module */
 int
-PyModule_AddUnsignedIntConstant(PyObject *module, const char *name,
-                                unsigned long value)
+pyev_add_watcher(PyObject *module, const char *name, PyTypeObject *type)
 {
-    PyObject *object = PyInt_FromUnsignedLong(value);
-    if (!object) {
-        return -1;
-    }
-    if (PyModule_AddObject(module, name, object)) {
-        Py_DECREF(object);
-        return -1;
-    }
-    return 0;
+    type->tp_base = &WatcherType;
+    return PyModule_AddType(module, name, type);
 }
 
 
@@ -132,24 +128,24 @@ pyev_allocator(void *ptr, long size)
 {
 #ifdef PYMALLOC_DEBUG
     PyGILState_STATE gstate = PyGILState_Ensure();
-#endif /* PYMALLOC_DEBUG */
+#endif
     void *result = NULL;
 
     if (size > 0) {
 #if SIZEOF_LONG > SIZEOF_SIZE_T
-        if ((unsigned long)size <= (unsigned long)PY_SIZE_MAX) {
+        if (size <= PY_SIZE_MAX) {
             result = PyMem_Realloc(ptr, (size_t)size);
         }
 #else
         result = PyMem_Realloc(ptr, (size_t)size);
-#endif /* SIZEOF_LONG > SIZEOF_SIZE_T */
+#endif
     }
     else if (!size) {
         PyMem_Free(ptr);
     }
 #ifdef PYMALLOC_DEBUG
     PyGILState_Release(gstate);
-#endif /* PYMALLOC_DEBUG */
+#endif
     return result;
 }
 
@@ -166,11 +162,53 @@ pyev_syserr_cb(const char *msg)
 }
 
 
+#ifdef MS_WINDOWS
+/* MS Windows supports only sockets for Io watchers.
+   Importing the _socket module CAPI give us access to Sock_Type */
+int
+pyev_import_socket(void)
+{
+    void *api;
+
+#if PY_MAJOR_VERSION == 2 && PY_MINOR_VERSION < 7
+    PyObject *_socket, *_socket_CAPI;
+    _socket = PyImport_ImportModule("_socket");
+    if (!_socket) {
+        return -1;
+    }
+    _socket_CAPI = PyObject_GetAttrString(_socket, "CAPI");
+    if (!_socket_CAPI) {
+        Py_DECREF(_socket);
+        return -1;
+    }
+    api = PyCObject_AsVoidPtr(_socket_CAPI);
+    Py_DECREF(_socket_CAPI);
+    Py_DECREF(_socket);
+#else
+    api = PyCapsule_Import("_socket.CAPI", 0);
+#endif
+    if (!api) {
+        return -1;
+    }
+    memcpy(&PySocketModule, api, sizeof(PySocketModule));
+    return 0;
+}
+#endif
+
+
 /*******************************************************************************
 * pyev_module
 *******************************************************************************/
 
+/* pyev_module.m_doc */
+PyDoc_STRVAR(pyev_m_doc,
+"Python libev interface.");
+
+
 /* pyev.version() -> (str, str) */
+PyDoc_STRVAR(pyev_version_doc,
+"version() -> (str, str)");
+
 static PyObject *
 pyev_version(PyObject *module)
 {
@@ -179,6 +217,9 @@ pyev_version(PyObject *module)
 
 
 /* pyev.abi_version() -> (int, int) */
+PyDoc_STRVAR(pyev_abi_version_doc,
+"abi_version() -> (int, int)");
+
 static PyObject *
 pyev_abi_version(PyObject *module)
 {
@@ -187,6 +228,9 @@ pyev_abi_version(PyObject *module)
 
 
 /* pyev.time() -> float */
+PyDoc_STRVAR(pyev_time_doc,
+"time() -> float");
+
 static PyObject *
 pyev_time(PyObject *module)
 {
@@ -195,6 +239,9 @@ pyev_time(PyObject *module)
 
 
 /* pyev.sleep(interval) */
+PyDoc_STRVAR(pyev_sleep_doc,
+"sleep(interval)");
+
 static PyObject *
 pyev_sleep(PyObject *module, PyObject *args)
 {
@@ -211,6 +258,9 @@ pyev_sleep(PyObject *module, PyObject *args)
 
 
 /* pyev.supported_backends() -> int */
+PyDoc_STRVAR(pyev_supported_backends_doc,
+"supported_backends() -> int");
+
 static PyObject *
 pyev_supported_backends(PyObject *module)
 {
@@ -219,6 +269,9 @@ pyev_supported_backends(PyObject *module)
 
 
 /* pyev.recommended_backends() -> int */
+PyDoc_STRVAR(pyev_recommended_backends_doc,
+"recommended_backends() -> int");
+
 static PyObject *
 pyev_recommended_backends(PyObject *module)
 {
@@ -227,6 +280,9 @@ pyev_recommended_backends(PyObject *module)
 
 
 /* pyev.embeddable_backends() -> int */
+PyDoc_STRVAR(pyev_embeddable_backends_doc,
+"embeddable_backends() -> int");
+
 static PyObject *
 pyev_embeddable_backends(PyObject *module)
 {
@@ -234,8 +290,12 @@ pyev_embeddable_backends(PyObject *module)
 }
 
 
-/* pyev.default_loop([flags=EVFLAG_AUTO, pending_cb=None, data=None, debug=False,
-                      io_interval=0.0, timeout_interval=0.0]) -> 'default_loop' */
+/* pyev.default_loop([flags=EVFLAG_AUTO, callback=None, data=None, debug=False,
+                      io_interval=0.0, timeout_interval=0.0]) -> 'default loop' */
+PyDoc_STRVAR(pyev_default_loop_doc,
+"default_loop([flags=EVFLAG_AUTO, callback=None, data=None, debug=False,\n\
+               io_interval=0.0, timeout_interval=0.0]) -> 'default loop'");
+
 static PyObject *
 pyev_default_loop(PyObject *module, PyObject *args, PyObject *kwargs)
 {
@@ -256,13 +316,35 @@ pyev_default_loop(PyObject *module, PyObject *args, PyObject *kwargs)
 }
 
 
+#if EV_SIGNAL_ENABLE
+/* pyev.feed_signal(signum) */
+PyDoc_STRVAR(pyev_feed_signal_doc,
+"feed_signal(signum)");
+
+static PyObject *
+pyev_feed_signal(PyObject *module, PyObject *args)
+{
+    int signum;
+
+    if (!PyArg_ParseTuple(args, "i:feed_signal", &signum)) {
+        return NULL;
+    }
+    ev_feed_signal(signum);
+    Py_RETURN_NONE;
+}
+#endif
+
+
 /* pyev_module.m_methods */
 static PyMethodDef pyev_m_methods[] = {
-    {"version", (PyCFunction)pyev_version, METH_NOARGS, pyev_version_doc},
+    {"version", (PyCFunction)pyev_version,
+     METH_NOARGS, pyev_version_doc},
     {"abi_version", (PyCFunction)pyev_abi_version,
      METH_NOARGS, pyev_abi_version_doc},
-    {"time", (PyCFunction)pyev_time, METH_NOARGS, pyev_time_doc},
-    {"sleep", (PyCFunction)pyev_sleep, METH_VARARGS, pyev_sleep_doc},
+    {"time", (PyCFunction)pyev_time,
+     METH_NOARGS, pyev_time_doc},
+    {"sleep", (PyCFunction)pyev_sleep,
+     METH_VARARGS, pyev_sleep_doc},
     {"supported_backends", (PyCFunction)pyev_supported_backends,
      METH_NOARGS, pyev_supported_backends_doc},
     {"recommended_backends", (PyCFunction)pyev_recommended_backends,
@@ -271,6 +353,10 @@ static PyMethodDef pyev_m_methods[] = {
      METH_NOARGS, pyev_embeddable_backends_doc},
     {"default_loop", (PyCFunction)pyev_default_loop,
      METH_VARARGS | METH_KEYWORDS, pyev_default_loop_doc},
+#if EV_SIGNAL_ENABLE
+    {"feed_signal", (PyCFunction)pyev_feed_signal,
+     METH_VARARGS, pyev_feed_signal_doc},
+#endif
     {NULL} /* Sentinel */
 };
 
@@ -284,142 +370,123 @@ static PyModuleDef pyev_module = {
     -1,                                       /*m_size*/
     pyev_m_methods,                           /*m_methods*/
 };
-#endif /* PY_MAJOR_VERSION >= 3 */
+#endif
 
 
 /* pyev_module initialization */
 PyObject *
 init_pyev(void)
 {
-    PyObject *pyev, *version;
+    PyObject *pyev;
 
     /* fill in deferred data addresses */
     WatcherType.tp_new = PyType_GenericNew;
-    IoType.tp_base = &WatcherType;
-    TimerType.tp_base = &WatcherType;
-    PeriodicType.tp_base = &WatcherType;
-    SignalType.tp_base = &WatcherType;
-    ChildType.tp_base = &WatcherType;
-    StatType.tp_base = &WatcherType;
-    IdleType.tp_base = &WatcherType;
-    PrepareType.tp_base = &WatcherType;
-    CheckType.tp_base = &WatcherType;
-    EmbedType.tp_base = &WatcherType;
-    ForkType.tp_base = &WatcherType;
-    AsyncType.tp_base = &WatcherType;
-
-    /* checking types */
-    if (
-        PyType_Ready(&LoopType) ||
-        PyType_Ready(&WatcherType) ||
-        PyType_Ready(&IoType) ||
-        PyType_Ready(&TimerType) ||
-        PyType_Ready(&PeriodicType) ||
-        PyType_Ready(&SignalType) ||
-        PyType_Ready(&ChildType) ||
-        PyType_Ready(&StatType) ||
-        PyType_Ready(&IdleType) ||
-        PyType_Ready(&PrepareType) ||
-        PyType_Ready(&CheckType) ||
-        PyType_Ready(&EmbedType) ||
-        PyType_Ready(&ForkType) ||
-        PyType_Ready(&AsyncType)
-       ) {
+#ifdef MS_WINDOWS
+    if (_setmaxstdio(PYEV_MAXSTDIO) != PYEV_MAXSTDIO) {
+        PyErr_SetString(PyExc_WindowsError, "_setmaxstdio failed");
         return NULL;
     }
-    /* init StatdataType */
-    if (!initialized) {
-        PyStructSequence_InitType(&StatdataType, &Statdata_desc);
+    if (pyev_import_socket()) {
+        return NULL;
     }
-    initialized = 1;
+#endif
+#if EV_STAT_ENABLE
+    if (!StatdataType_initialized) {
+        PyStructSequence_InitType(&StatdataType, &Statdata_desc);
+        StatdataType_initialized = 1;
+    }
+#endif
     /* pyev */
 #if PY_MAJOR_VERSION >= 3
     pyev = PyModule_Create(&pyev_module);
 #else
     pyev = Py_InitModule3("pyev", pyev_m_methods, pyev_m_doc);
-#endif /* PY_MAJOR_VERSION >= 3 */
+#endif
     if (!pyev) {
         return NULL;
     }
     /* pyev.Error */
-    Error = PyErr_Create("pyev.Error", pyev_Error_doc, NULL);
+    Error = PyErr_NewException("pyev.Error", NULL, NULL);
     if (!Error || PyModule_AddObject(pyev, "Error", Error)) {
         Py_XDECREF(Error);
         goto fail;
     }
-    /* pyev.__version__ */
-    version = PyString_FromFormat("%s-%s", PYEV_VERSION, LIBEV_VERSION);
-    if (!version || PyModule_AddObject(pyev, "__version__", version)) {
-        Py_XDECREF(version);
-        goto fail;
-    }
     /* adding types and constants */
     if (
-        /* types */
+        /* Loop */
         PyModule_AddType(pyev, "Loop", &LoopType) ||
-        PyModule_AddType(pyev, "Io", &IoType) ||
-        PyModule_AddType(pyev, "Timer", &TimerType) ||
-        PyModule_AddType(pyev, "Periodic", &PeriodicType) ||
-        PyModule_AddType(pyev, "Signal", &SignalType) ||
-        PyModule_AddType(pyev, "Child", &ChildType) ||
-        PyModule_AddType(pyev, "Stat", &StatType) ||
-        PyModule_AddType(pyev, "Idle", &IdleType) ||
-        PyModule_AddType(pyev, "Prepare", &PrepareType) ||
-        PyModule_AddType(pyev, "Check", &CheckType) ||
-        PyModule_AddType(pyev, "Embed", &EmbedType) ||
-        PyModule_AddType(pyev, "Fork", &ForkType) ||
-        PyModule_AddType(pyev, "Async", &AsyncType) ||
-        /* Loop() and default_loop() flags */
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVFLAG_AUTO", (unsigned int)EVFLAG_AUTO) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVFLAG_NOENV", (unsigned int)EVFLAG_NOENV) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVFLAG_FORKCHECK", (unsigned int)EVFLAG_FORKCHECK) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVFLAG_NOINOTIFY", (unsigned int)EVFLAG_NOINOTIFY) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVFLAG_SIGNALFD", (unsigned int)EVFLAG_SIGNALFD) ||
-        /* backends */
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_SELECT", (unsigned int)EVBACKEND_SELECT) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_POLL", (unsigned int)EVBACKEND_POLL) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_EPOLL", (unsigned int)EVBACKEND_EPOLL) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_KQUEUE", (unsigned int)EVBACKEND_KQUEUE) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_DEVPOLL", (unsigned int)EVBACKEND_DEVPOLL) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_PORT", (unsigned int)EVBACKEND_PORT) ||
-        PyModule_AddUnsignedIntConstant(
-            pyev, "EVBACKEND_ALL", (unsigned int)EVBACKEND_ALL) ||
-        /* Loop.loop() flags */
-        PyModule_AddIntConstant(pyev, "EVLOOP_NONBLOCK", (int)EVLOOP_NONBLOCK) ||
-        PyModule_AddIntConstant(pyev, "EVLOOP_ONESHOT", (int)EVLOOP_ONESHOT) ||
-        /* Loop.unloop() how */
-        PyModule_AddIntConstant(pyev, "EVUNLOOP_ONE", (int)EVUNLOOP_ONE) ||
-        PyModule_AddIntConstant(pyev, "EVUNLOOP_ALL", (int)EVUNLOOP_ALL) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_AUTO) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_NOENV) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_FORKCHECK) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_NOINOTIFY) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_SIGNALFD) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVFLAG_NOSIGMASK) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_SELECT) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_POLL) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_EPOLL) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_KQUEUE) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_DEVPOLL) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_PORT) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_ALL) ||
+        PyModule_AddUnsignedIntMacro(pyev, EVBACKEND_MASK) ||
+        PyModule_AddIntMacro(pyev, EVRUN_NOWAIT) ||
+        PyModule_AddIntMacro(pyev, EVRUN_ONCE) ||
+        PyModule_AddIntMacro(pyev, EVBREAK_ONE) ||
+        PyModule_AddIntMacro(pyev, EVBREAK_ALL) ||
+        /* Watchers */
+        PyType_Ready(&WatcherType) ||
+        pyev_add_watcher(pyev, "Io", &IoType) ||
+        PyModule_AddIntMacro(pyev, EV_IO) ||
+        PyModule_AddIntMacro(pyev, EV_READ) ||
+        PyModule_AddIntMacro(pyev, EV_WRITE) ||
+        pyev_add_watcher(pyev, "Timer", &TimerType) ||
+        PyModule_AddIntMacro(pyev, EV_TIMER) ||
+#if EV_PERIODIC_ENABLE
+        pyev_add_watcher(pyev, "Periodic", &PeriodicType) ||
+        PyModule_AddIntMacro(pyev, EV_PERIODIC) ||
+#endif
+#if EV_SIGNAL_ENABLE
+        pyev_add_watcher(pyev, "Signal", &SignalType) ||
+        PyModule_AddIntMacro(pyev, EV_SIGNAL) ||
+#endif
+#if EV_CHILD_ENABLE
+        pyev_add_watcher(pyev, "Child", &ChildType) ||
+        PyModule_AddIntMacro(pyev, EV_CHILD) ||
+#endif
+#if EV_STAT_ENABLE
+        pyev_add_watcher(pyev, "Stat", &StatType) ||
+        PyModule_AddIntMacro(pyev, EV_STAT) ||
+#endif
+#if EV_IDLE_ENABLE
+        pyev_add_watcher(pyev, "Idle", &IdleType) ||
+        PyModule_AddIntMacro(pyev, EV_IDLE) ||
+#endif
+#if EV_PREPARE_ENABLE
+        pyev_add_watcher(pyev, "Prepare", &PrepareType) ||
+        PyModule_AddIntMacro(pyev, EV_PREPARE) ||
+#endif
+#if EV_CHECK_ENABLE
+        pyev_add_watcher(pyev, "Check", &CheckType) ||
+        PyModule_AddIntMacro(pyev, EV_CHECK) ||
+#endif
+#if EV_EMBED_ENABLE
+        pyev_add_watcher(pyev, "Embed", &EmbedType) ||
+        PyModule_AddIntMacro(pyev, EV_EMBED) ||
+#endif
+#if EV_FORK_ENABLE
+        pyev_add_watcher(pyev, "Fork", &ForkType) ||
+        PyModule_AddIntMacro(pyev, EV_FORK) ||
+#endif
+#if EV_ASYNC_ENABLE
+        pyev_add_watcher(pyev, "Async", &AsyncType) ||
+        PyModule_AddIntMacro(pyev, EV_ASYNC) ||
+#endif
+        /* additional events */
+        PyModule_AddIntMacro(pyev, EV_CUSTOM) ||
+        PyModule_AddIntMacro(pyev, EV_ERROR) ||
         /* priorities */
-        PyModule_AddIntConstant(pyev, "EV_MINPRI", (int)EV_MINPRI) ||
-        PyModule_AddIntConstant(pyev, "EV_MAXPRI", (int)EV_MAXPRI) ||
-        /* events */
-        PyModule_AddIntConstant(pyev, "EV_READ", (int)EV_READ) ||
-        PyModule_AddIntConstant(pyev, "EV_WRITE", (int)EV_WRITE) ||
-        PyModule_AddIntConstant(pyev, "EV_TIMER", (int)EV_TIMER) ||
-        PyModule_AddIntConstant(pyev, "EV_PERIODIC", (int)EV_PERIODIC) ||
-        PyModule_AddIntConstant(pyev, "EV_SIGNAL", (int)EV_SIGNAL) ||
-        PyModule_AddIntConstant(pyev, "EV_CHILD", (int)EV_CHILD) ||
-        PyModule_AddIntConstant(pyev, "EV_STAT", (int)EV_STAT) ||
-        PyModule_AddIntConstant(pyev, "EV_IDLE", (int)EV_IDLE) ||
-        PyModule_AddIntConstant(pyev, "EV_PREPARE", (int)EV_PREPARE) ||
-        PyModule_AddIntConstant(pyev, "EV_CHECK", (int)EV_CHECK) ||
-        PyModule_AddIntConstant(pyev, "EV_EMBED", (int)EV_EMBED) ||
-        PyModule_AddIntConstant(pyev, "EV_FORK", (int)EV_FORK) ||
-        PyModule_AddIntConstant(pyev, "EV_ASYNC", (int)EV_ASYNC) ||
-        PyModule_AddIntConstant(pyev, "EV_CUSTOM", (int)EV_CUSTOM) ||
-        PyModule_AddIntConstant(pyev, "EV_ERROR", (int)EV_ERROR)
+        PyModule_AddIntMacro(pyev, EV_MINPRI) ||
+        PyModule_AddIntMacro(pyev, EV_MAXPRI)
        ) {
         goto fail;
     }
@@ -431,7 +498,7 @@ init_pyev(void)
 fail:
 #if PY_MAJOR_VERSION >= 3
     Py_DECREF(pyev);
-#endif /* PY_MAJOR_VERSION >= 3 */
+#endif
     return NULL;
 }
 
@@ -447,4 +514,4 @@ initpyev(void)
 {
     init_pyev();
 }
-#endif /* PY_MAJOR_VERSION >= 3 */
+#endif

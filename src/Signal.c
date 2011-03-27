@@ -6,19 +6,17 @@
 int
 set_Signal(Signal *self, int signum)
 {
-    ev_loop *loop = ((Watcher *)self)->loop->loop;
-
     if (signum <= 0 || signum >= EV_NSIG) {
         PyErr_SetString(Error, "illegal signal number");
         return -1;
     }
 #if EV_MULTIPLICITY
-    if (signals[signum - 1].loop && signals[signum - 1].loop != loop) {
+    if (signals[signum - 1].loop &&
+        signals[signum - 1].loop != ((Watcher *)self)->loop->loop) {
         PyErr_SetString(Error, "the same signal must not be attached to two "
             "different loops");
         return -1;
     }
-    signals[signum - 1].loop = loop;
 #endif
     ev_signal_set(&self->signal, signum);
     return 0;
@@ -64,14 +62,10 @@ Signal_tp_init(Signal *self, PyObject *args, PyObject *kwargs)
             &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
+    if (init_Watcher((Watcher *)self, loop, callback, 1, data, priority)) {
         return -1;
     }
-    if (set_Signal(self, signum)) {
-        return -1;
-    }
-    return 0;
+    return set_Signal(self, signum);
 }
 
 
@@ -84,10 +78,8 @@ Signal_set(Signal *self, PyObject *args)
 {
     int signum;
 
+    PYEV_SET_ACTIVE_WATCHER(self);
     if (!PyArg_ParseTuple(args, "i:set", &signum)) {
-        return NULL;
-    }
-    if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
     if (set_Signal(self, signum)) {

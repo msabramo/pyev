@@ -181,14 +181,10 @@ Stat_tp_init(Stat *self, PyObject *args, PyObject *kwargs)
             &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
+    if (init_Watcher((Watcher *)self, loop, callback, 1, data, priority)) {
         return -1;
     }
-    if (set_Stat(self, path, interval)) {
-        return -1;
-    }
-    return 0;
+    return set_Stat(self, path, interval);
 }
 
 
@@ -202,10 +198,8 @@ Stat_set(Stat *self, PyObject *args)
     PyObject *path;
     double interval;
 
+    PYEV_SET_ACTIVE_WATCHER(self);
     if (!PyArg_ParseTuple(args, "Od:set", &path, &interval)) {
-        return NULL;
-    }
-    if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
     if (set_Stat(self, path, interval)) {
@@ -223,12 +217,12 @@ static PyObject *
 Stat_stat(Stat *self)
 {
     ev_stat_stat(((Watcher *)self)->loop->loop, &self->stat);
-    if (update_Stat(self)) {
-        return NULL;
-    }
-    if (self->stat.attr.st_nlink == 0) {
+    if (!self->stat.attr.st_nlink) {
         return PyErr_SetFromErrnoWithFilename(PyExc_OSError,
                                               (char *)self->stat.path);
+    }
+    if (update_Stat(self)) {
+        return NULL;
     }
     Py_RETURN_NONE;
 }

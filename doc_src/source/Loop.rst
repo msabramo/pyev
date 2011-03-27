@@ -70,16 +70,15 @@
         call comes in handy.
 
 
-    .. py:method:: fork
+    .. py:method:: reset
 
         This method sets a flag that causes subsequent loop iterations to
-        reinitialise the kernel state for backends that have one. Despite the
-        name, you can call it anytime, but it makes most sense after forking,
-        in the child process. You **must** call it (or use
-        :py:const:`EVFLAG_FORKCHECK`) in the child before calling
-        :py:meth:`resume` or :py:meth:`start`. Again, you have to call
-        it on any loop that you want to re-use after a fork, even if you do not
-        plan to use the loop in the parent.
+        reinitialise the kernel state for backends that have one. You can call
+        it anytime, but it makes most sense after forking, in the child process.
+        You **must** call it (or use :py:const:`EVFLAG_FORKCHECK`) in the child
+        before calling :py:meth:`resume` or :py:meth:`start`. Again, you have to
+        call it on any loop that you want to re-use after a fork, even if you do
+        not plan to use the loop in the parent.
 
         On the other hand, you only need to call this method in the child
         process if and only if you want to use the event loop in the child. If
@@ -333,7 +332,7 @@ behaviour
 
 .. py:data:: EVFLAG_FORKCHECK
 
-    Instead of calling :py:meth:`Loop.fork` manually after a fork, you can also
+    Instead of calling :py:meth:`Loop.reset` manually after a fork, you can also
     make libev check for a fork in each iteration by enabling this flag.
     This works by calling :c:func:`getpid` on every iteration of the loop, and
     thus this might slow down your event loop if you do a lot of loop iterations
@@ -567,3 +566,64 @@ either no event watchers are active anymore or :py:meth:`Loop.stop` was called.
 
     A *how* value of :py:const:`EVBREAK_ALL` will make all nested
     :py:meth:`Loop.start` calls return.
+
+
+.. _Loop_watcher_methods:
+
+:py:class:`Loop` watcher methods
+================================
+
+The following methods are just a convenient way to instantiate watchers attached
+to the loop (although they do not take keyword arguments).
+
+.. py:method:: Loop.io(fd, events, callback[, data, priority])
+
+    Returns an :py:class:`Io` object.
+
+.. py:method:: Loop.timer(after, repeat, callback[, data, priority])
+
+    Returns a :py:class:`Timer` object.
+
+.. py:method:: Loop.periodic(offset, interval, callback[, data, priority])
+
+    Returns a :py:class:`Periodic` object.
+
+.. py:method:: Loop.scheduler(scheduler, callback[, data, priority])
+
+    Returns a :py:class:`Scheduler` object.
+
+.. py:method:: Loop.signal(signum, callback[, data, priority])
+
+    Returns a :py:class:`Signal` object.
+
+.. py:method:: Loop.child(pid, trace, callback[, data, priority])
+
+    Returns a :py:class:`Child` object.
+
+.. py:method:: Loop.stat(path, interval, callback[, data, priority])
+
+    Returns a :py:class:`Stat` object.
+
+.. py:method:: Loop.idle(callback[, data, priority])
+
+    Returns an :py:class:`Idle` object.
+
+.. py:method:: Loop.prepare(callback[, data, priority])
+
+    Returns a :py:class:`Prepare` object.
+
+.. py:method:: Loop.check(callback[, data, priority])
+
+    Returns a :py:class:`Check` object.
+
+.. py:method:: Loop.embed(other[, callback, data, priority])
+
+    Returns an :py:class:`Embed` object.
+
+.. py:method:: Loop.fork(callback[, data, priority])
+
+    Returns a :py:class:`Fork` object.
+
+.. py:method:: Loop.async(callback[, data, priority])
+
+    Returns an :py:class:`Async` object.

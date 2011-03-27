@@ -6,9 +6,7 @@
 int
 set_Timer(Timer *self, double after, double repeat)
 {
-    if (!positive_float(repeat)) {
-        return -1;
-    }
+    PYEV_NEGATIVE_FLOAT(repeat);
     ev_timer_set(&self->timer, after, repeat);
     return 0;
 }
@@ -53,14 +51,10 @@ Timer_tp_init(Timer *self, PyObject *args, PyObject *kwargs)
             &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
+    if (init_Watcher((Watcher *)self, loop, callback, 1, data, priority)) {
         return -1;
     }
-    if (set_Timer(self, after, repeat)) {
-        return -1;
-    }
-    return 0;
+    return set_Timer(self, after, repeat);
 }
 
 
@@ -73,10 +67,8 @@ Timer_set(Timer *self, PyObject *args)
 {
     double after, repeat;
 
+    PYEV_SET_ACTIVE_WATCHER(self);
     if (!PyArg_ParseTuple(args, "dd:set", &after, &repeat)) {
-        return NULL;
-    }
-    if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
     if (set_Timer(self, after, repeat)) {
@@ -137,17 +129,12 @@ Timer_repeat_set(Timer *self, PyObject *value, void *closure)
 {
     double repeat;
 
-    if (!value) {
-        PyErr_SetString(PyExc_TypeError, "cannot delete attribute");
-        return -1;
-    }
+    PYEV_NULL_VALUE(value);
     repeat = PyFloat_AsDouble(value);
     if (repeat == -1 && PyErr_Occurred()) {
         return -1;
     }
-    if (!positive_float(repeat)) {
-        return -1;
-    }
+    PYEV_NEGATIVE_FLOAT(repeat);
     self->timer.repeat = repeat;
     return 0;
 }

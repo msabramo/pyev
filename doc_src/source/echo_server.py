@@ -92,8 +92,8 @@ class Server(object):
         self.stop()
 
     def io_cb(self, watcher, revents):
-        while True:
-            try:
+        try:
+            while True:
                 try:
                     sock, address = self.sock.accept()
                 except socket.error as err:
@@ -103,9 +103,8 @@ class Server(object):
                         raise
                 else:
                     self.conns[address] = Connection(sock, address, self.loop)
-            except Exception:
-                self.handle_error("error accepting a connection")
-                break
+        except Exception:
+            self.handle_error("error accepting a connection")
 
     def start(self):
         self.sock.listen(socket.SOMAXCONN)

@@ -43,7 +43,12 @@
 ################################################################################
 
 
-import platform, os, os.path, re, sys, subprocess
+import platform
+import os
+import os.path
+import re
+import sys
+import subprocess
 from distutils.command.build_ext import build_ext
 from distutils.core import setup, Extension
 
@@ -58,7 +63,7 @@ if curr_py_ver < min_py_vers[int(curr_py_ver[0])]:
                      "Python3 >= {0[3]}".format(min_py_vers))
 
 
-pyev_version = "0.7.1"
+pyev_version = "0.8.0"
 pyev_description = open(os.path.abspath("README.txt"), "r").read()
 libev_dir = os.path.abspath("src/libev")
 libev_configure_ac = open(os.path.join(libev_dir, "configure.ac"), "r").read()
@@ -164,5 +169,6 @@ setup(
                    "Programming Language :: Python :: 2.6",
                    "Programming Language :: Python :: 2.7",
                    "Programming Language :: Python :: 3.1",
+                   "Programming Language :: Python :: 3.2",
                   ]
      )

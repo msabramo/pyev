@@ -86,14 +86,10 @@ Embed_tp_init(Embed *self, PyObject *args, PyObject *kwargs)
             &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, (void *)1, data, priority)) {
+    if (init_Watcher((Watcher *)self, loop, callback, 0, data, priority)) {
         return -1;
     }
-    if (set_Embed(self, other)) {
-        return -1;
-    }
-    return 0;
+    return set_Embed(self, other);
 }
 
 
@@ -106,10 +102,8 @@ Embed_set(Embed *self, PyObject *args)
 {
     Loop *other;
 
+    PYEV_SET_ACTIVE_WATCHER(self);
     if (!PyArg_ParseTuple(args, "O!:set", &LoopType, &other)) {
-        return NULL;
-    }
-    if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
     if (set_Embed(self, other)) {
@@ -162,7 +156,7 @@ PyDoc_STRVAR(Embed_callback_doc,
 /* EmbedType.tp_getsets */
 static PyGetSetDef Embed_tp_getsets[] = {
     {"callback", (getter)Watcher_callback_get, (setter)Watcher_callback_set,
-     Embed_callback_doc, (void *)1},
+     Embed_callback_doc, NULL},
     {NULL}  /* Sentinel */
 };
 

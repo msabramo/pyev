@@ -1,30 +1,58 @@
 /*******************************************************************************
-* IdleType
+* PeriodicBaseType
 *******************************************************************************/
 
-/* IdleType.tp_doc */
-PyDoc_STRVAR(Idle_tp_doc,
-"Idle(loop, callback[, data=None, priority=0])");
-
-
-/* IdleType.tp_new */
+/* PeriodicBaseType.tp_new */
 static PyObject *
-Idle_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+PeriodicBase_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
-    Idle *self = (Idle *)WatcherType.tp_new(type, args, kwargs);
+    PeriodicBase *self = (PeriodicBase *)WatcherType.tp_new(type, args, kwargs);
     if (!self) {
         return NULL;
     }
-    new_Watcher((Watcher *)self, (ev_watcher *)&self->idle, EV_IDLE);
+    new_Watcher((Watcher *)self, (ev_watcher *)&self->periodic, EV_PERIODIC);
     return (PyObject *)self;
 }
 
 
-/* IdleType */
-static PyTypeObject IdleType = {
+/* PeriodicBase.reset() */
+PyDoc_STRVAR(PeriodicBase_reset_doc,
+"reset()");
+
+static PyObject *
+PeriodicBase_reset(PeriodicBase *self)
+{
+    ev_periodic_again(((Watcher *)self)->loop->loop, &self->periodic);
+    Py_RETURN_NONE;
+}
+
+
+/* PeriodicBase.at() -> float */
+PyDoc_STRVAR(PeriodicBase_at_doc,
+"at() -> float");
+
+static PyObject *
+PeriodicBase_at(PeriodicBase *self)
+{
+    return PyFloat_FromDouble(ev_periodic_at(&self->periodic));
+}
+
+
+/* PeriodicBaseType.tp_methods */
+static PyMethodDef PeriodicBase_tp_methods[] = {
+    {"reset", (PyCFunction)PeriodicBase_reset,
+     METH_NOARGS, PeriodicBase_reset_doc},
+    {"at", (PyCFunction)PeriodicBase_at,
+     METH_NOARGS, PeriodicBase_at_doc},
+    {NULL}  /* Sentinel */
+};
+
+
+/* PeriodicBaseType */
+static PyTypeObject PeriodicBaseType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "pyev.Idle",                              /*tp_name*/
-    sizeof(Idle),                             /*tp_basicsize*/
+    "pyev.PeriodicBase",                      /*tp_name*/
+    sizeof(PeriodicBase),                     /*tp_basicsize*/
     0,                                        /*tp_itemsize*/
     0,                                        /*tp_dealloc*/
     0,                                        /*tp_print*/
@@ -42,14 +70,14 @@ static PyTypeObject IdleType = {
     0,                                        /*tp_setattro*/
     0,                                        /*tp_as_buffer*/
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-    Idle_tp_doc,                              /*tp_doc*/
+    0,                                        /*tp_doc*/
     0,                                        /*tp_traverse*/
     0,                                        /*tp_clear*/
     0,                                        /*tp_richcompare*/
     0,                                        /*tp_weaklistoffset*/
     0,                                        /*tp_iter*/
     0,                                        /*tp_iternext*/
-    0,                                        /*tp_methods*/
+    PeriodicBase_tp_methods,                  /*tp_methods*/
     0,                                        /*tp_members*/
     0,                                        /*tp_getsets*/
     0,                                        /*tp_base*/
@@ -59,5 +87,5 @@ static PyTypeObject IdleType = {
     0,                                        /*tp_dictoffset*/
     0,                                        /*tp_init*/
     0,                                        /*tp_alloc*/
-    Idle_tp_new,                              /*tp_new*/
+    PeriodicBase_tp_new,                      /*tp_new*/
 };

@@ -1,10 +1,41 @@
 Todo
 ====
 
-* split :py:class:`Periodic` into 2 (or 3) objects depending on
-  :ref:`Periodic_modes`.
 * provide more meaningful examples.
 * make a unittest test suite out of my local ones.
+
+
+
+Release 0.8.0-4.04
+==================
+
+misc:
+
+- someone convinced me it was a bad idea to drop Python 2 support.
+- Add support for Python 3.2.
+
+
+:py:mod:`pyev`:
+
+- Added :py:class:`Scheduler` watcher.
+
+
+:py:class:`Loop`:
+
+- Fixed a bug where the last exception was consumed by the loop instead of being
+  raised, when debug was True.
+- Method fork() has been renamed reset().
+- Added :ref:`Loop_watcher_methods`.
+
+
+:py:class:`Periodic`:
+
+- Removed attribute/parameter sheduler (use :py:class:`Scheduler` watcher instead).
+
+
+:py:class:`Scheduler`:
+
+- Fixed a segfault happening when scheduler raised an error (Python3 only).
 
 
 

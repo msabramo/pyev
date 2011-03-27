@@ -97,8 +97,6 @@
 #include "libev/ev.c"
 
 
-
-
 /*******************************************************************************
 * objects
 *******************************************************************************/
@@ -108,6 +106,9 @@
 typedef struct {
     PyTypeObject *Sock_Type;
     PyObject *error;
+#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 2
+    PyObject *timeout_error;
+#endif
 } PySocketModule_APIObject;
 
 static PySocketModule_APIObject PySocketModule;
@@ -163,17 +164,32 @@ static PyTypeObject TimerType;
 
 
 #if EV_PERIODIC_ENABLE
-/* Periodic */
+/* PeriodicBase - not exposed */
 typedef struct {
     Watcher watcher;
     ev_periodic periodic;
+} PeriodicBase;
+static PyTypeObject PeriodicBaseType;
+
+/* Periodic */
+typedef struct {
+    PeriodicBase periodicbase;
+} Periodic;
+static PyTypeObject PeriodicType;
+
+#if EV_PREPARE_ENABLE
+/* Scheduler */
+typedef struct {
+    PeriodicBase periodicbase;
+    ev_prepare prepare;
     PyObject *scheduler;
     PyObject *err_type;
     PyObject *err_value;
     PyObject *err_traceback;
     char err_fatal;
-} Periodic;
-static PyTypeObject PeriodicType;
+} Scheduler;
+static PyTypeObject SchedulerType;
+#endif
 #endif
 
 
@@ -195,6 +211,7 @@ typedef struct {
 } Child;
 static PyTypeObject ChildType;
 #endif
+
 
 #if EV_STAT_ENABLE
 /* Statdata */
@@ -278,8 +295,9 @@ static PyTypeObject AsyncType;
 *******************************************************************************/
 
 #if PY_MAJOR_VERSION >= 3
+#define PyInt_FromLong PyLong_FromLong
+#define PyInt_FromUnsignedLong PyLong_FromUnsignedLong
 #define PyString_FromFormat PyUnicode_FromFormat
-#define PyString_FromString PyUnicode_FromString
 #define PyString_FromPath PyUnicode_DecodeFSDefault
 char *
 PyString_AsPath(PyObject *pypath)
@@ -294,11 +312,7 @@ PyString_AsPath(PyObject *pypath)
     Py_DECREF(bytes);
     return path;
 }
-#define PyInt_FromLong PyLong_FromLong
-#define PyInt_FromUnsignedLong PyLong_FromUnsignedLong
 #else
-#define PyString_FromPath PyString_FromString
-#define PyString_AsPath PyString_AsString
 PyObject *
 PyInt_FromUnsignedLong(unsigned long value)
 {
@@ -307,19 +321,85 @@ PyInt_FromUnsignedLong(unsigned long value)
     }
     return PyInt_FromLong((long)value);
 }
+#define PyString_FromPath PyString_FromString
+#define PyString_AsPath PyString_AsString
 #endif
 
 
-/* check for a positive float */
-int
-positive_float(double value)
-{
-    if (value < 0.0) {
-        PyErr_SetString(PyExc_ValueError, "a positive float or 0.0 is required");
-        return 0;
-    }
-    return 1;
-}
+#define PYEV_EXIT_LOOP(l) \
+    do { \
+        ev_break((l), EVBREAK_ALL); \
+    } while (0)
+
+
+#define PYEV_RETURN_BOOL(v) \
+    do { \
+        if ((v)) { \
+            Py_RETURN_TRUE; \
+        } \
+        Py_RETURN_FALSE; \
+    } while (0)
+
+
+#define PYEV_CALLABLE_VALUE(v) \
+    do { \
+        if (!PyCallable_Check((v))) { \
+            PyErr_SetString(PyExc_TypeError, "a callable is required"); \
+            return -1; \
+        } \
+    } while (0)
+
+
+#define PYEV_CALLABLE_OR_NONE_VALUE(v) \
+    do { \
+        if ((v) != Py_None && !PyCallable_Check((v))) { \
+            PyErr_SetString(PyExc_TypeError, "a callable or None is required"); \
+            return -1; \
+        } \
+    } while (0)
+
+
+#define PYEV_NULL_VALUE(v) \
+    do { \
+        if (!(v)) { \
+            PyErr_SetString(PyExc_TypeError, "cannot delete attribute"); \
+            return -1; \
+        } \
+    } while (0)
+
+
+#define PYEV_NEGATIVE_FLOAT(v) \
+    do { \
+        if ((v) < 0.0) { \
+            PyErr_SetString(PyExc_ValueError, \
+                            "a positive float or 0.0 is required"); \
+            return -1; \
+        } \
+    } while (0)
+
+
+#define PYEV_ACTIVE_WATCHER(W, m, r) \
+    do { \
+        if (ev_is_active((W)->watcher)) { \
+            PyErr_Format(Error, \
+                         "you cannot %s a watcher while it is active", (m)); \
+            return (r); \
+        } \
+    } while (0)
+
+
+#define PYEV_PENDING_WATCHER(W, m, r) \
+    do { \
+        if (ev_is_pending((W)->watcher)) { \
+            PyErr_Format(Error, \
+                         "you cannot %s a watcher while it is pending", (m)); \
+            return (r); \
+        } \
+    } while (0)
+
+
+#define PYEV_SET_ACTIVE_WATCHER(w) \
+    PYEV_ACTIVE_WATCHER(((Watcher *)(w)), "set", NULL)
 
 
 #endif

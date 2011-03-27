@@ -20,28 +20,6 @@ Check_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 }
 
 
-/* CheckType.tp_init */
-static int
-Check_tp_init(Check *self, PyObject *args, PyObject *kwargs)
-{
-    Loop *loop;
-    PyObject *callback, *data = NULL;
-    int priority = 0;
-
-    static char *kwlist[] = {"loop", "callback", "data", "priority", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|Oi:__init__", kwlist,
-            &LoopType, &loop, &callback, &data, &priority)) {
-        return -1;
-    }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
-        return -1;
-    }
-    return 0;
-}
-
-
 /* CheckType */
 static PyTypeObject CheckType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -79,7 +57,7 @@ static PyTypeObject CheckType = {
     0,                                        /*tp_descr_get*/
     0,                                        /*tp_descr_set*/
     0,                                        /*tp_dictoffset*/
-    (initproc)Check_tp_init,                  /*tp_init*/
+    0,                                        /*tp_init*/
     0,                                        /*tp_alloc*/
     Check_tp_new,                             /*tp_new*/
 };

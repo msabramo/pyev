@@ -55,7 +55,11 @@
 #include "Io.c"
 #include "Timer.c"
 #if EV_PERIODIC_ENABLE
+#include "PeriodicBase.c"
 #include "Periodic.c"
+#if EV_PREPARE_ENABLE
+#include "Scheduler.c"
+#endif
 #endif
 #if EV_SIGNAL_ENABLE
 #include "Signal.c"
@@ -115,9 +119,15 @@ PyModule_AddType(PyObject *module, const char *name, PyTypeObject *type)
 
 /* Add a watcher to a module */
 int
-pyev_add_watcher(PyObject *module, const char *name, PyTypeObject *type)
+PyModule_AddWatcher(PyObject *module, const char *name, PyTypeObject *type,
+                 PyTypeObject *base)
 {
-    type->tp_base = &WatcherType;
+    if (base) {
+        type->tp_base = base;
+    }
+    else {
+        type->tp_base = &WatcherType;
+    }
     return PyModule_AddType(module, name, type);
 }
 
@@ -163,8 +173,22 @@ pyev_syserr_cb(const char *msg)
 
 
 #ifdef MS_WINDOWS
-/* MS Windows supports only sockets for Io watchers.
-   Importing the _socket module CAPI give us access to Sock_Type */
+int
+pyev_setmaxstdio(void)
+{
+    if (_setmaxstdio(PYEV_MAXSTDIO) != PYEV_MAXSTDIO) {
+        if (errno) {
+            PyErr_SetFromErrno(PyExc_WindowsError);
+        }
+        else {
+            PyErr_SetString(PyExc_WindowsError, "_setmaxstdio failed");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+
 int
 pyev_import_socket(void)
 {
@@ -301,13 +325,12 @@ pyev_default_loop(PyObject *module, PyObject *args, PyObject *kwargs)
 {
     if (!DefaultLoop) {
         DefaultLoop = new_Loop(&LoopType, args, kwargs, 1);
-        if (!DefaultLoop) {
-            return NULL;
-        }
     }
     else {
-        if (PyErr_WarnEx(PyExc_UserWarning, "returning the 'default loop' "
-                "created earlier, arguments ignored (if provided).", 1)) {
+        if (PyErr_WarnEx(PyExc_UserWarning,
+                         "returning the 'default loop' created earlier, "
+                         "arguments ignored (if provided).",
+                         1)) {
             return NULL;
         }
         Py_INCREF(DefaultLoop);
@@ -379,18 +402,18 @@ init_pyev(void)
 {
     PyObject *pyev;
 
-    /* fill in deferred data addresses */
-    WatcherType.tp_new = PyType_GenericNew;
 #ifdef MS_WINDOWS
-    if (_setmaxstdio(PYEV_MAXSTDIO) != PYEV_MAXSTDIO) {
-        PyErr_SetString(PyExc_WindowsError, "_setmaxstdio failed");
-        return NULL;
-    }
-    if (pyev_import_socket()) {
+    if (pyev_setmaxstdio() || pyev_import_socket()) {
         return NULL;
     }
 #endif
+    /* fill in deferred data addresses */
+    WatcherType.tp_new = PyType_GenericNew;
+#if EV_PERIODIC_ENABLE
+    PeriodicBaseType.tp_base = &WatcherType;
+#endif
 #if EV_STAT_ENABLE
+    /* init StatdataType */
     if (!StatdataType_initialized) {
         PyStructSequence_InitType(&StatdataType, &Statdata_desc);
         StatdataType_initialized = 1;
@@ -433,52 +456,58 @@ init_pyev(void)
         PyModule_AddIntMacro(pyev, EVRUN_ONCE) ||
         PyModule_AddIntMacro(pyev, EVBREAK_ONE) ||
         PyModule_AddIntMacro(pyev, EVBREAK_ALL) ||
-        /* Watchers */
+        /* watchers */
         PyType_Ready(&WatcherType) ||
-        pyev_add_watcher(pyev, "Io", &IoType) ||
+        PyModule_AddWatcher(pyev, "Io", &IoType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_IO) ||
         PyModule_AddIntMacro(pyev, EV_READ) ||
         PyModule_AddIntMacro(pyev, EV_WRITE) ||
-        pyev_add_watcher(pyev, "Timer", &TimerType) ||
+        PyModule_AddWatcher(pyev, "Timer", &TimerType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_TIMER) ||
 #if EV_PERIODIC_ENABLE
-        pyev_add_watcher(pyev, "Periodic", &PeriodicType) ||
+        PyType_Ready(&PeriodicBaseType) ||
+        PyModule_AddWatcher(pyev, "Periodic", &PeriodicType,
+                            &PeriodicBaseType) ||
         PyModule_AddIntMacro(pyev, EV_PERIODIC) ||
+#if EV_PREPARE_ENABLE
+        PyModule_AddWatcher(pyev, "Scheduler", &SchedulerType,
+                            &PeriodicBaseType) ||
+#endif
 #endif
 #if EV_SIGNAL_ENABLE
-        pyev_add_watcher(pyev, "Signal", &SignalType) ||
+        PyModule_AddWatcher(pyev, "Signal", &SignalType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_SIGNAL) ||
 #endif
 #if EV_CHILD_ENABLE
-        pyev_add_watcher(pyev, "Child", &ChildType) ||
+        PyModule_AddWatcher(pyev, "Child", &ChildType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_CHILD) ||
 #endif
 #if EV_STAT_ENABLE
-        pyev_add_watcher(pyev, "Stat", &StatType) ||
+        PyModule_AddWatcher(pyev, "Stat", &StatType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_STAT) ||
 #endif
 #if EV_IDLE_ENABLE
-        pyev_add_watcher(pyev, "Idle", &IdleType) ||
+        PyModule_AddWatcher(pyev, "Idle", &IdleType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_IDLE) ||
 #endif
 #if EV_PREPARE_ENABLE
-        pyev_add_watcher(pyev, "Prepare", &PrepareType) ||
+        PyModule_AddWatcher(pyev, "Prepare", &PrepareType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_PREPARE) ||
 #endif
 #if EV_CHECK_ENABLE
-        pyev_add_watcher(pyev, "Check", &CheckType) ||
+        PyModule_AddWatcher(pyev, "Check", &CheckType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_CHECK) ||
 #endif
 #if EV_EMBED_ENABLE
-        pyev_add_watcher(pyev, "Embed", &EmbedType) ||
+        PyModule_AddWatcher(pyev, "Embed", &EmbedType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_EMBED) ||
 #endif
 #if EV_FORK_ENABLE
-        pyev_add_watcher(pyev, "Fork", &ForkType) ||
+        PyModule_AddWatcher(pyev, "Fork", &ForkType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_FORK) ||
 #endif
 #if EV_ASYNC_ENABLE
-        pyev_add_watcher(pyev, "Async", &AsyncType) ||
+        PyModule_AddWatcher(pyev, "Async", &AsyncType, NULL) ||
         PyModule_AddIntMacro(pyev, EV_ASYNC) ||
 #endif
         /* additional events */
@@ -501,6 +530,7 @@ fail:
 #endif
     return NULL;
 }
+
 
 #if PY_MAJOR_VERSION >= 3
 PyMODINIT_FUNC

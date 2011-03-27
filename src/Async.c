@@ -20,28 +20,6 @@ Async_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 }
 
 
-/* AsyncType.tp_init */
-static int
-Async_tp_init(Async *self, PyObject *args, PyObject *kwargs)
-{
-    Loop *loop;
-    PyObject *callback, *data = NULL;
-    int priority = 0;
-
-    static char *kwlist[] = {"loop", "callback", "data", "priority", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|Oi:__init__", kwlist,
-            &LoopType, &loop, &callback, &data, &priority)) {
-        return -1;
-    }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
-        return -1;
-    }
-    return 0;
-}
-
-
 /* Async.send() */
 PyDoc_STRVAR(Async_send_doc,
 "send()");
@@ -69,10 +47,7 @@ PyDoc_STRVAR(Async_sent_doc,
 static PyObject *
 Async_sent_get(Async *self, void *closure)
 {
-    if (ev_async_pending(&self->async)) {
-        Py_RETURN_TRUE;
-    }
-    Py_RETURN_FALSE;
+    PYEV_RETURN_BOOL(ev_async_pending(&self->async));
 }
 
 
@@ -121,7 +96,7 @@ static PyTypeObject AsyncType = {
     0,                                        /*tp_descr_get*/
     0,                                        /*tp_descr_set*/
     0,                                        /*tp_dictoffset*/
-    (initproc)Async_tp_init,                  /*tp_init*/
+    0,                                        /*tp_init*/
     0,                                        /*tp_alloc*/
     Async_tp_new,                             /*tp_new*/
 };

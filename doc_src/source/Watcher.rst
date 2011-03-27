@@ -15,6 +15,7 @@ Watchers
     Io
     Timer
     Periodic
+    Scheduler
     Signal
     Child
     Stat

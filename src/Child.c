@@ -3,11 +3,10 @@
 *******************************************************************************/
 
 /* set the Child */
-int
+void
 set_Child(Child *self, int pid, PyObject *trace)
 {
     ev_child_set(&self->child, pid, (trace == Py_True) ? 1 : 0);
-    return 0;
 }
 
 
@@ -51,8 +50,11 @@ Child_tp_init(Child *self, PyObject *args, PyObject *kwargs)
             &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 1,
-                     callback, NULL, data, priority)) {
+    if (!ev_is_default_loop(loop->loop)) {
+        PyErr_SetString(Error, "loop must be the 'default loop'");
+        return -1;
+    }
+    if (init_Watcher((Watcher *)self, loop, callback, 1, data, priority)) {
         return -1;
     }
     set_Child(self, pid, trace);
@@ -70,10 +72,8 @@ Child_set(Child *self, PyObject *args)
     int pid;
     PyObject *trace;
 
+    PYEV_SET_ACTIVE_WATCHER(self);
     if (!PyArg_ParseTuple(args, "iO!:set", &pid, &PyBool_Type, &trace)) {
-        return NULL;
-    }
-    if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
     set_Child(self, pid, trace);

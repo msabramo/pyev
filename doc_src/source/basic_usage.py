@@ -2,16 +2,17 @@ import signal
 import pyev
 
 
-def sig_cb(watcher, events):
+def sig_cb(watcher, revents):
     print("got SIGINT")
+    loop = watcher.loop
     # optional - stop all watchers
-    if watcher.data:
-        print("stopping watchers: {0}".format(watcher.data))
-        while watcher.data:
-            watcher.data.pop().stop()
+    if loop.data:
+        print("stopping watchers: {0}".format(loop.data))
+        while loop.data:
+            loop.data.pop().stop()
     # unloop all nested loop
-    print("stopping the loop: {0}".format(watcher.loop))
-    watcher.loop.stop(pyev.EVBREAK_ALL)
+    print("stopping the loop: {0}".format(loop))
+    loop.stop(pyev.EVBREAK_ALL)
 
 
 def timer_cb(watcher, revents):
@@ -24,11 +25,11 @@ def timer_cb(watcher, revents):
 if __name__ == "__main__":
     loop = pyev.default_loop()
     # initialise and start a repeating timer
-    timer = pyev.Timer(0, 2, loop, timer_cb, data=0)
+    timer = loop.timer(0, 2, timer_cb, 0)
     timer.start()
     # initialise and start a Signal watcher
-    sig = pyev.Signal(signal.SIGINT, loop, sig_cb)
-    sig.data = [timer, sig] # optional
+    sig = loop.signal(signal.SIGINT, sig_cb)
     sig.start()
+    loop.data = [timer, sig] # optional
     # now wait for events to arrive
     loop.start()

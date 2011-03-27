@@ -11,7 +11,7 @@ set_Io(Io *self, PyObject *fd, int events)
 #ifdef MS_WINDOWS
     if (!PyObject_TypeCheck(fd, PySocketModule.Sock_Type)) {
         PyErr_SetString(PyExc_TypeError, "only socket objects are supported "
-            "in this configuration");
+                        "in this configuration");
         return -1;
     }
 #endif
@@ -75,14 +75,10 @@ Io_tp_init(Io *self, PyObject *args, PyObject *kwargs)
             &LoopType, &loop, &callback, &data, &priority)) {
         return -1;
     }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
+    if (init_Watcher((Watcher *)self, loop, callback, 1, data, priority)) {
         return -1;
     }
-    if (set_Io(self, fd, events)) {
-        return -1;
-    }
-    return 0;
+    return set_Io(self, fd, events);
 }
 
 
@@ -96,10 +92,8 @@ Io_set(Io *self, PyObject *args)
     PyObject *fd;
     int events;
 
+    PYEV_SET_ACTIVE_WATCHER(self);
     if (!PyArg_ParseTuple(args, "Oi:set", &fd, &events)) {
-        return NULL;
-    }
-    if (!inactive_Watcher((Watcher *)self)) {
         return NULL;
     }
     if (set_Io(self, fd, events)) {

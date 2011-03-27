@@ -20,28 +20,6 @@ Fork_tp_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 }
 
 
-/* ForkType.tp_init */
-static int
-Fork_tp_init(Fork *self, PyObject *args, PyObject *kwargs)
-{
-    Loop *loop;
-    PyObject *callback, *data = NULL;
-    int priority = 0;
-
-    static char *kwlist[] = {"loop", "callback", "data", "priority", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O|Oi:__init__", kwlist,
-            &LoopType, &loop, &callback, &data, &priority)) {
-        return -1;
-    }
-    if (init_Watcher((Watcher *)self, loop, 0,
-                     callback, NULL, data, priority)) {
-        return -1;
-    }
-    return 0;
-}
-
-
 /* ForkType */
 static PyTypeObject ForkType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -79,7 +57,7 @@ static PyTypeObject ForkType = {
     0,                                        /*tp_descr_get*/
     0,                                        /*tp_descr_set*/
     0,                                        /*tp_dictoffset*/
-    (initproc)Fork_tp_init,                   /*tp_init*/
+    0,                                        /*tp_init*/
     0,                                        /*tp_alloc*/
     Fork_tp_new,                              /*tp_new*/
 };

@@ -6,6 +6,30 @@ Todo
 
 
 
+Release 0.9.0
+=============
+
+misc:
+
+- .. warning::
+    pyev does not embed libev anymore (Issue #9):
+
+    - libev >= 4.15 is required.
+    - win32 support has been dropped.
+    - No more :py:class:`Stat` watchers.
+    - pyev is now published under the GPLv3 license.
+
+- Support for Python2 < 2.7 and Python3 < 3.3 has been dropped.
+
+
+:py:mod:`pyev`:
+
+- Method version() is replaced by attribute __version__.
+- Removed :py:class:`Stat` watcher type.
+- Removed :py:const:`EVFLAG_NOINOTIFY` and :py:const:`EV_STAT` constants .
+
+
+
 Release 0.8.1-4.04
 ==================
 

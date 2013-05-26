@@ -18,7 +18,6 @@ Watchers
     Scheduler
     Signal
     Child
-    Stat
     Idle
     Prepare_Check
     Embed
@@ -182,7 +181,7 @@ to users, its methods and attributes are described here.
         Setting a priority outside the range of :py:const:`EV_MINPRI` to
         :py:const:`EV_MAXPRI` is fine, as long as you do not mind that the
         priority value you query might or might not have been clamped to the
-        valid range (see also :ref:`Watcher_priorities`).
+        valid range.
 
         The default priority used by watchers when no priority has been set is
         always ``0``.
@@ -227,11 +226,6 @@ Watcher received events
 
     The pid specified in the :py:class:`Child` watcher has received a status
     change.
-
-.. py:data:: EV_STAT
-
-    The path specified in the :py:class:`Stat` watcher changed its attributes
-    somehow.
 
 .. py:data:: EV_IDLE
 
@@ -288,26 +282,6 @@ Watcher received events
 
 Watcher priorities
 ==================
-
-Unfortunately the range of valid priorities is defined at compile time. If you
-really need to change it you can still define new values in setup.py and rebuild
-pyev, example::
-
-    setup(
-          ...,
-          ext_modules=[
-                       Extension("pyev",
-                                 ["src/pyev.c"],
-                                 define_macros=[
-                                                # uncomment the following
-                                                # to modify priorities
-                                                ("EV_MINPRI", "-5"),
-                                                ("EV_MAXPRI", "5"),
-                                               ]
-                                ),
-                      ],
-          ...
-         )
 
 .. py:data:: EV_MINPRI
 

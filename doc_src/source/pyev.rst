@@ -6,7 +6,7 @@
 ******************************************
 
 .. py:module:: pyev
-    :platform: POSIX, Windows
+    :platform: POSIX
     :synopsis: Python libev interface.
 
 .. seealso::
@@ -14,7 +14,7 @@
     <http://pod.tst.eu/http://cvs.schmorp.de/libev/ev.pod>`_.
 
 
-.. py:function:: default_loop([flags=EVFLAG_AUTO, callback=None, data=None, debug=False, io_interval=0.0, timeout_interval=0.0]) -> the 'default loop'
+.. py:function:: default_loop([flags=EVFLAG_AUTO, callback=None, data=None, io_interval=0.0, timeout_interval=0.0, debug=False]) -> the 'default loop'
 
     This will instanciate the *default loop* if it hasn't been created yet
     and return it. If the *default loop* was already initialized this simply
@@ -29,8 +29,8 @@
     See :py:class:`Loop` for details about the arguments.
 
     .. note::
-         If you don't know what loop to use, use the one returned from this
-         function.
+        If you don't know what loop to use, use the one returned from this
+        function.
 
 
 .. py:function:: supported_backends() -> int
@@ -68,7 +68,8 @@
 
         pyev.embeddable_backends() & pyev.recommended_backends()
 
-    See :ref:`Loop_backends` for a description of the set values.
+    See :ref:`Loop_backends` for a description of the set values and
+    :py:class:`Embed` watchers for more information about embedding loops.
 
 
 .. py:function:: time() -> float
@@ -76,8 +77,8 @@
     Returns the current time as libev would use it.
 
     .. note::
-         The :py:meth:`Loop.now` method is usually faster and also often returns
-         the timestamp you actually want to know.
+        The :py:meth:`Loop.now` method is usually faster and also often returns
+        the timestamp you actually want to know.
 
 
 .. py:function:: sleep(interval)
@@ -85,21 +86,26 @@
     :param float interval: interval in seconds.
 
     Sleep for the given *interval*. The current thread will be blocked until
-    either it is interrupted or the given time interval has passed.
+    either it is interrupted or the given time interval has passed
+    (approximately - it might return a bit earlier even if not interrupted).
+
+    .. note::
+        The range of the *interval* is limited - libev only guarantees to work
+        with sleep times of up to one day (interval <= 86400.0).
 
 
 .. py:function:: feed_signal(signum)
 
     :param int signum: signal number to feed libev.
 
-    This function can be used to 'simulate' a signal receive. It is completely
+    This function can be used to "simulate" a signal receive. It is completely
     safe to call this function at any time, from any context, including signal
     handlers or random threads. Its main use is to customise signal handling in
     your process, especially in the presence of threads.
 
     For example, using the :py:mod:`signal` module, you could ignore signals by
     default in all threads (and specify :py:const:`EVFLAG_NOSIGMASK` when
-    creating any loops), and in one thread, wait for signals, then 'deliver'
+    creating any loops), and in one thread, wait for signals, then "deliver"
     them to libev by calling :py:func:`feed_signal`.
 
 
@@ -112,10 +118,9 @@
         This is not the same as libev version (although it might coincide).
 
 
-.. py:function:: version() -> tuple of strings
+.. py:attribute:: __version__
 
-    Returns a tuple of version strings. The former is pyev version, while the
-    latter is the underlying libev version.
+    :py:mod:`pyev`'s version.
 
 
 .. py:exception:: Error

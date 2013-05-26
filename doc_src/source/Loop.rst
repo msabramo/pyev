@@ -9,7 +9,7 @@
 ===============================
 
 
-.. py:class:: Loop([flags=EVFLAG_AUTO, callback=None, data=None, debug=False, io_interval=0.0, timeout_interval=0.0])
+.. py:class:: Loop([flags=EVFLAG_AUTO, callback=None, data=None, io_interval=0.0, timeout_interval=0.0, debug=False])
 
     :param int flags: can be used to specify special behaviour or specific
         backends to use. See :ref:`Loop_flags` for more details.
@@ -25,11 +25,11 @@
     :param object data: any Python object you might want to attach to the loop
         (will be stored in :py:attr:`data`).
 
-    :param bool debug: See :py:attr:`debug`.
-
     :param float io_interval: See :py:attr:`io_interval`.
 
     :param float timeout_interval: See :py:attr:`timeout_interval`.
+
+    :param bool debug: See :py:attr:`debug`.
 
     Instanciates a new event loop that is always distinct from
     the *default loop*. Unlike the *default loop*, it cannot handle
@@ -38,19 +38,24 @@
 
     One common way to use libev with threads is indeed to create one
     :py:class:`Loop` per thread, and use the *default loop* (from
-    :py:func:`default_loop`) in the 'main' or 'initial' thread
+    :py:func:`default_loop`) in the "main" or "initial" thread
 
     .. seealso::
         `FUNCTIONS CONTROLLING EVENT LOOPS
         <http://pod.tst.eu/http://cvs.schmorp.de/libev/ev.pod#FUNCTIONS_CONTROLLING_EVENT_LOOPS>`_
 
 
-    .. py:method:: start([flags])
+    .. py:method:: start([flags]) -> bool
 
         :param int flags: defaults to ``0``. See :ref:`Loop_start_flags`.
 
         This method usually is called after you have initialised all your
         watchers and you want to start handling events.
+
+        Returns :py:const:`False` if there are no more active watchers (which
+        usually means "all jobs done" or "deadlock"), and :py:const:`True` in
+        all other cases (which usually means you should call :py:meth:`start`
+        again)
 
 
     .. py:method:: stop([how])
@@ -158,7 +163,7 @@
         case you have to :py:meth:`ref` in the callback).
 
         .. note::
-             These two methods have nothing to do with Python reference counting.
+            These two methods have nothing to do with Python reference counting.
 
 
     .. py:method:: verify
@@ -238,26 +243,12 @@
         If you want to reset the callback, set it to :py:const:`None`.
 
         .. warning::
-             If the callback raises an error, pyev will **stop the loop**.
+            If the callback raises an error, pyev will **stop the loop**.
 
 
     .. py:attribute:: data
 
         loop data.
-
-
-    .. py:attribute:: debug
-
-        This affects the behaviour of the loop while executing all watcher
-        callbacks (:py:attr:`Watcher.callback` and :py:attr:`Periodic.scheduler`).
-
-        If :py:const:`False` (the default), when a callback returns with an
-        unhandled exception, the loop will print a warning and suppress the
-        exception, in this configuration, the loop will **only stop on fatal
-        errors** (memory allocation failure, :py:const:`EV_ERROR` received, ...).
-
-        If :py:const:`True`, the loop will **stop on all errors** (you do not
-        want that if you write a server).
 
 
     .. py:attribute:: io_interval
@@ -309,6 +300,20 @@
         make sure they fire on, say, one-second boundaries only.
 
 
+    .. py:attribute:: debug
+
+        This affects the behaviour of the loop while executing all watcher
+        callbacks (:py:attr:`Watcher.callback` and :py:attr:`Scheduler.scheduler`).
+
+        If :py:const:`False` (the default), when a callback returns with an
+        unhandled exception, the loop will print a warning and suppress the
+        exception, in this configuration, the loop will **only stop on fatal
+        errors** (memory allocation failure, :py:const:`EV_ERROR` received, ...).
+
+        If :py:const:`True`, the loop will **stop on all errors** (you do not
+        want that if you write a server).
+
+
 .. _Loop_flags:
 
 :py:class:`Loop` *flags*
@@ -342,14 +347,6 @@ behaviour
     This flag setting cannot be overridden or specified in the
     :envvar:`LIBEV_FLAGS` environment variable.
 
-.. py:data:: EVFLAG_NOINOTIFY
-
-    When this flag is specified, then libev will not attempt to use the
-    ``inotify`` API for the :py:class:`Stat` watchers. Apart from debugging and
-    testing, this flag can be useful to conserve ``inotify`` file descriptors,
-    as otherwise each loop using :py:class:`Stat` watchers consumes one
-    ``inotify`` handle.
-
 .. py:data:: EVFLAG_SIGNALFD
 
     When this flag is specified, then libev will attempt to use the ``signalfd``
@@ -381,13 +378,13 @@ backends
 
 .. py:data:: EVBACKEND_SELECT
 
-    *Availability:* POSIX, Windows
+    *Availability:* POSIX
 
     The standard ``select`` backend. Not completely standard, as libev tries to
     roll its own :c:type:`fd_set` with no limits on the number of fds, but if
     that fails, expect a fairly low limit on the number of fds when using this
-    backend. It doesn't scale too well (O(highest_fd)), but is usually the
-    fastest backend for a low number of fds.
+    backend. It doesn't scale too well (O(*highest_fd*)), but is usually the
+    fastest backend for a low number of (low-numbered) fds.
 
     To get good performance out of this backend you need a high amount of
     parallelism (most of the file descriptors should be busy). If you are
@@ -397,9 +394,7 @@ backends
     notifications you get per iteration.
 
     This backend maps :py:const:`EV_READ` to the :c:data:`readfds` set and
-    :py:const:`EV_WRITE` to the :c:data:`writefds` set (and to work around
-    Microsoft Windows bugs, also onto the :c:data:`exceptfds` set on that
-    platform).
+    :py:const:`EV_WRITE` to the :c:data:`writefds` set.
 
 .. py:data:: EVBACKEND_POLL
 
@@ -408,7 +403,7 @@ backends
     The ``poll`` backend. It's more complicated than ``select``, but handles
     sparse fds better and has no artificial limit on the number of fds you can
     use (except it will slow down considerably with a lot of inactive fds). It
-    scales similarly to ``select``, i.e. O(total_fds). See
+    scales similarly to ``select``, i.e. O(*total_fds*). See
     :py:const:`EVBACKEND_SELECT`, above, for performance tips.
 
     This backend maps :py:const:`EV_READ` to
@@ -422,9 +417,9 @@ backends
 
     Use the linux-specific ``epoll`` interface. For few fds, this backend is a
     little bit slower than ``poll`` and ``select``, but it scales phenomenally
-    better. While ``poll`` and ``select`` usually scale like O(*n*) where *n* is
-    the total number of fds (or the highest fd), ``epoll`` scales either O(1) or
-    O(active_fds).
+    better. While ``poll`` and ``select`` usually scale like O(*total_fds*)
+    where *total_fds* is the total number of fds (or the highest fd), ``epoll``
+    scales either O(*1*) or O(*active_fds*).
 
     While stopping, setting and starting an I/O watcher in the same iteration
     will result in some caching, there is still a system call per such incident,
@@ -441,8 +436,8 @@ backends
     ``select`` can be as fast or faster than ``epoll`` for maybe up to a hundred
     file descriptors, depending on the usage.
 
-    While nominally embeddable in other event loops, this feature is disabled in
-    kernels < 2.6.32.
+    While nominally embeddable in other event loops, this feature is broken in
+    all kernel versions tested so far.
 
     This backend maps :py:const:`EV_READ` and :py:const:`EV_WRITE` the same way
     :py:const:`EVBACKEND_POLL` does.
@@ -452,7 +447,7 @@ backends
     *Availability:* most BSD clones
 
     Due to a number of bugs and inconsistencies between BSDs implementations,
-    ``kqueue`` is not being 'auto-detected' unless you explicitly specify it in
+    ``kqueue`` is not being "auto-detected" unless you explicitly specify it in
     the *flags* or libev was compiled on a known-to-be-good (-enough) system
     like NetBSD. It scales the same way the ``epoll`` backend does.
 
@@ -485,12 +480,12 @@ backends
     *Availability:* Solaris 10
 
     This uses the Solaris 10 ``event port`` mechanism. It's slow, but it scales
-    very well (O(active_fds)).
+    very well (O(*active_fds*)).
 
-    It requires one system call per active file descriptor per loop iteration.
-    For a small to medium number of file descriptors, a 'slow'
-    :py:const:`EVBACKEND_SELECT` or :py:const:`EVBACKEND_POLL` backend might
-    perform better.
+    While this backend scales well, it requires one system call per active file
+    descriptor per loop iteration. For small and medium numbers of file
+    descriptors a "slow" :py:const:`EVBACKEND_SELECT` or
+    :py:const:`EVBACKEND_POLL` backend might perform better.
 
     On the positive side, this backend actually performed fully to specification
     in all tests and is fully embeddable.
@@ -599,10 +594,6 @@ to the loop (although they do not take keyword arguments).
 .. py:method:: Loop.child(pid, trace, callback[, data, priority])
 
     Returns a :py:class:`Child` object.
-
-.. py:method:: Loop.stat(path, interval, callback[, data, priority])
-
-    Returns a :py:class:`Stat` object.
 
 .. py:method:: Loop.idle(callback[, data, priority])
 

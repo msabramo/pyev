@@ -133,11 +133,16 @@ Watcher_Callback(struct ev_loop *loop, ev_watcher *watcher, int revents)
     if (revents & EV_ERROR) {
         if (!PyErr_Occurred()) {
             if (errno) { // there's a high probability it is related
+#ifdef HAS_PYERR_SETFROMERRNOWITHFILENAMEOBJECT
                 PyObject *pymsg =
                     PyString_FromFormat("<%s object at %p> has been stopped",
                                         Py_TYPE(self)->tp_name, self);
                 PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError, pymsg);
                 Py_XDECREF(pymsg);
+#else
+#warning We DO NOT have HAS_PYERR_SETFROMERRNOWITHFILENAMEOBJECT
+                PyErr_SetFromErrno(PyExc_OSError);
+#endif
             }
             else {
                 PyErr_Format(Error, "unspecified libev error: "

@@ -20,6 +20,9 @@
 
 from distutils.version import StrictVersion
 from distutils.core import setup, Extension
+from distutils import ccompiler
+from distutils import sysconfig
+from distutils.command.build_ext import build_ext as _build_ext
 
 from ctypes.util import find_library
 from ctypes import cdll
@@ -59,6 +62,27 @@ if "sdist" not in argv:
 
 PYEV_VERSION = "\"{0}\"".format(pyev_version)
 
+class build_ext(_build_ext):
+    def build_extensions(self):
+        compiler = ccompiler.new_compiler()
+        python_library_dir = sysconfig.get_config_var('LIBDIR')
+        python_library = 'python'
+        import sys
+        if hasattr(sys, 'pypy_version_info'):
+            python_library = ''
+        if python_library.startswith('lib'):
+            python_library = python_library[3:]
+        HAS_PYERR_SETFROMERRNOWITHFILENAMEOBJECT = compiler.has_function(
+            'PyErr_SetFromErrnoWithFilenameObject',
+            library_dirs=[python_library_dir],
+            libraries=[python_library])
+        for extension in self.extensions:
+            if HAS_PYERR_SETFROMERRNOWITHFILENAMEOBJECT:
+                extension.define_macros.append(
+                    ('HAS_PYERR_SETFROMERRNOWITHFILENAMEOBJECT',
+                     HAS_PYERR_SETFROMERRNOWITHFILENAMEOBJECT))
+        _build_ext.build_extensions(self)
+
 setup(
       name="pyev",
       version=pyev_version,
@@ -72,6 +96,7 @@ setup(
       platforms=["POSIX"],
       ext_modules=[Extension("pyev", ["src/pyev.c"], libraries=["ev"],
                              define_macros=[("PYEV_VERSION", PYEV_VERSION)])],
+      cmdclass={'build_ext': build_ext,},
       classifiers=[
                    "Development Status :: 5 - Production/Stable",
                    "Intended Audience :: Developers",

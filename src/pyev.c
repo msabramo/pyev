@@ -490,6 +490,17 @@ pyev_abi_version(PyObject *module)
 }
 
 
+/* pyev.version() -> (int, int) */
+PyDoc_STRVAR(pyev_version_doc,
+"version() -> (int, int)");
+
+static PyObject *
+pyev_version(PyObject *module)
+{
+    return Py_BuildValue("(ii)", ev_version_major(), ev_version_minor());
+}
+
+
 /* pyev_module.m_methods */
 static PyMethodDef pyev_m_methods[] = {
     {"default_loop", (PyCFunction)pyev_default_loop,
@@ -510,6 +521,8 @@ static PyMethodDef pyev_m_methods[] = {
 #endif
     {"abi_version", (PyCFunction)pyev_abi_version,
      METH_NOARGS, pyev_abi_version_doc},
+    {"version", (PyCFunction)pyev_version,
+     METH_NOARGS, pyev_version_doc},
     {NULL} /* Sentinel */
 };
 

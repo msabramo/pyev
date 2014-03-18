@@ -6,4 +6,11 @@ python:
   - pypy
   - 3.3
 
+before_install:
+  - curl http://dist.schmorp.de/libev/libev-4.15.tar.gz | tar xzfv -
+  - ( cd libev-4.15 && ./configure && make && sudo make install )
+  - sudo ldconfig
 install: python setup.py install
+script:
+  - python -c 'import pyev; print(pyev); print(pyev.__version__); print(pyev.version())'
+  - echo "No real tests yet..."

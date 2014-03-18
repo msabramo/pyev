@@ -30,7 +30,7 @@ from os.path import abspath
 
 
 pyev_version = "0.9.0"
-min_python_versions = {"2": "2.7.0", "3": "3.3.0"}
+min_python_versions = {"2": "2.6.0", "3": "3.3.0"}
 min_libev_version = "4.15"
 
 
